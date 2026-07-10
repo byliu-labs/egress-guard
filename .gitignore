@@ -1,0 +1,25 @@
+# Build artifacts
+bin/
+
+# Generated at build time from configs/defaults.toml
+internal/config/defaults_embedded.toml
+
+# OS / editor cruft
+.DS_Store
+*.swp
+
+# Local task tracker — never publish
+.todos/
+
+# Local notes / manual-test scratch — never publish
+.local/
+
+# Claude Code project state — local only, never publish
+.claude/
+# Project context for Claude — local only
+CLAUDE.md
+
+# Internal planning & security-review docs — live in egress-guard-private, never publish
+docs/plans/
+docs/superpowers/
+docs/security-review/

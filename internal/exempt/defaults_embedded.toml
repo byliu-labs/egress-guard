@@ -1,0 +1,98 @@
+# v0.2 bundled exempt-app catalog. Each entry must match BOTH signature
+# (Valid + TeamID/BundleID/Pkg) AND identity (exe basename or bundle id).
+# Scripting interpreters and shell tools are intentionally NOT here — they
+# are always filtered. See DESIGN.md §4.4 (the Python problem).
+
+[[macos]]
+bundle_id = "com.apple.Safari"
+team_id   = "APPLE"
+
+[[macos]]
+bundle_id = "com.google.Chrome"
+team_id   = "EQHXZ8M8AV"
+
+[[macos]]
+bundle_id = "org.mozilla.firefox"
+team_id   = "43AQ936H96"
+
+[[macos]]
+bundle_id = "com.microsoft.edgemac"
+team_id   = "UBF8T346G9"
+
+[[macos]]
+bundle_id = "company.thebrowser.Browser"  # Arc
+
+[[macos]]
+bundle_id = "com.brave.Browser"
+
+[[macos]]
+bundle_id = "com.tinyspeck.slackmacgap"
+
+[[macos]]
+bundle_id = "com.hnc.Discord"
+
+[[macos]]
+bundle_id = "us.zoom.xos"
+
+[[macos]]
+bundle_id = "com.spotify.client"
+
+[[macos]]
+bundle_id = "notion.id"
+
+[[macos]]
+bundle_id = "md.obsidian"
+
+# Apple system services — exec-path match, since they're not bundled apps.
+[[macos]]
+exe_basename = "nsurlsessiond"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "trustd"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "softwareupdated"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "apsd"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "cloudd"
+team_id      = "APPLE"
+
+# ============================================================
+# Linux: by package ownership (TeamID = package name on linux)
+# ============================================================
+
+[[linux]]
+exe_basename = "firefox"
+package      = "firefox"
+
+[[linux]]
+exe_basename = "google-chrome"
+package      = "google-chrome-stable"
+
+[[linux]]
+exe_basename = "systemd-resolved"
+package      = "systemd"
+
+[[linux]]
+exe_basename = "NetworkManager"
+package      = "network-manager"
+
+[[linux]]
+exe_basename = "gnome-shell"
+package      = "gnome-shell"
+
+# ============================================================
+# Always filtered — listed for documentation; matchers IGNORE these.
+# (Hardcoded denylist in code, not config — config can't loosen.)
+# ============================================================
+# python, python3, node, ruby, perl, php, lua, Rscript,
+# curl, wget, httpie, aria2c, sh, bash, zsh, fish, dash,
+# pip, npm, gem, cargo, go, mvn, gradle, composer, brew, apt, dnf,
+# git, ssh, scp, sftp, rsync

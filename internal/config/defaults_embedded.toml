@@ -1,0 +1,52 @@
+# configs/defaults.toml — bundled default allowlist for egress-guard v0.1.
+# Categories shipped on by default. Power users can copy this file to
+# ~/.config/egress-guard/allowlist.toml and edit.
+
+[allow]
+hosts = [
+  # LLM APIs (the project's primary supported workflows)
+  "api.anthropic.com",
+  "api.openai.com",
+  "api.x.ai",
+  "api.together.xyz",
+  "generativelanguage.googleapis.com",
+
+  # Package registries
+  "pypi.org",
+  "files.pythonhosted.org",
+  "registry.npmjs.org",
+  "rubygems.org",
+  "crates.io",
+  "static.crates.io",
+  "deb.debian.org",
+  "archive.ubuntu.com",
+  "formulae.brew.sh",
+
+  # Code hosting
+  "github.com",
+  "*.github.com",
+  "codeload.github.com",
+  "raw.githubusercontent.com",
+  "objects.githubusercontent.com",
+  "api.github.com",
+  "gitlab.com",
+  "bitbucket.org",
+
+  # Cloud auth (well-known endpoints)
+  "sts.amazonaws.com",
+  "login.microsoftonline.com",
+  "oauth2.googleapis.com",
+  "accounts.google.com",
+
+  # Captive-portal probes (otherwise hotel/airport wifi sign-in breaks)
+  "captive.apple.com",
+  "connectivity-check.ubuntu.com",
+  "detectportal.firefox.com",
+
+  # OCSP / cert transparency (Apple)
+  "ocsp.apple.com",
+  "ocsp.digicert.com",
+]
+
+[deny]
+hosts = []

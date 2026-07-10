@@ -1,0 +1,305 @@
+// Package drift models "normal" egress for a machine and classifies each
+// connection as known (silent) or drift (new/unexpected).
+//
+// This package is observe-only: it never allows or denies traffic. It reads
+// decision-log history and the catalog, then returns classifications for
+// callers to act on.
+package drift
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+)
+
+// Class is whether a connection matches the established baseline.
+type Class string
+
+const (
+	ClassKnown Class = "known"
+	ClassDrift Class = "drift"
+)
+
+// DriftReason explains why a connection was classified as drift. Its zero
+// value is valid only when Class == ClassKnown.
+type DriftReason string
+
+const (
+	ReasonNovelIdentity    DriftReason = "novel_identity"
+	ReasonNovelDestination DriftReason = "novel_destination"
+	ReasonNovelPairing     DriftReason = "novel_pairing"
+)
+
+// Baseline is a per-machine model of normal identity/destination pairs.
+type Baseline struct {
+	cat          *catalog.Catalog
+	identities   map[string]bool
+	hosts        map[string]bool
+	pairs        map[string]bool
+	builtThrough time.Time
+}
+
+// Event is the result of classifying one decisionlog.Entry against a Baseline.
+type Event struct {
+	Class     Class
+	Reason    DriftReason
+	Identity  catalog.Identity
+	Host      string
+	DestIP    string
+	FirstSeen time.Time
+	Rank      int
+	Log       decisionlog.Entry
+}
+
+const minStableDays = 2
+
+const baselineSchemaVersion = 1
+
+const (
+	rankNeverHit         = 4
+	rankNovelIdentity    = 3
+	rankNovelDestination = 2
+	rankNovelPairing     = 1
+)
+
+type pairStats struct {
+	days map[string]bool
+	id   string
+	host string
+}
+
+type baselineSnapshot struct {
+	SchemaVersion int      `json:"schema_version"`
+	BuiltThrough  string   `json:"built_through"`
+	Identities    []string `json:"identities"`
+	Hosts         []string `json:"hosts"`
+	Pairs         []string `json:"pairs"`
+}
+
+// BuildBaseline folds decision-log history into stable normal traffic. Only
+// allow and observe decisions teach the baseline; deny decisions never do.
+func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline {
+	b := &Baseline{
+		cat:        cat,
+		identities: map[string]bool{},
+		hosts:      map[string]bool{},
+		pairs:      map[string]bool{},
+	}
+	byPair := map[string]*pairStats{}
+	var latest time.Time
+
+	for _, e := range entries {
+		if e.Decision == decisionlog.DecisionDeny {
+			continue
+		}
+		id := identityKey(identityFromEntry(e))
+		host := hostKey(e.Host)
+		pair := pairKey(id, host)
+		stats, ok := byPair[pair]
+		if !ok {
+			stats = &pairStats{days: map[string]bool{}, id: id, host: host}
+			byPair[pair] = stats
+		}
+		if ts, err := time.Parse(time.RFC3339, e.Timestamp); err == nil {
+			stats.days[ts.UTC().Format("2006-01-02")] = true
+			if ts.After(latest) {
+				latest = ts
+			}
+		}
+	}
+
+	for pair, stats := range byPair {
+		if len(stats.days) < minStableDays {
+			continue
+		}
+		b.identities[stats.id] = true
+		b.hosts[stats.host] = true
+		b.pairs[pair] = true
+	}
+	b.builtThrough = latest
+	return b
+}
+
+// Classify scores one decision-log entry against the baseline. It ignores the
+// entry decision because drift asks whether this pair is normal, not whether
+// this attempt was allowed.
+func (b *Baseline) Classify(e decisionlog.Entry) Event {
+	id := identityFromEntry(e)
+	idKey := identityKey(id)
+	hKey := hostKey(e.Host)
+	pKey := pairKey(idKey, hKey)
+	hostKnown := b.hosts[hKey]
+	firstSeen, _ := time.Parse(time.RFC3339, e.Timestamp)
+	ev := Event{
+		Identity:  id,
+		Host:      e.Host,
+		DestIP:    e.DestIP,
+		FirstSeen: firstSeen,
+		Log:       e,
+	}
+
+	if b.pairs[pKey] {
+		ev.Class = ClassKnown
+		return ev
+	}
+	if b.cat != nil {
+		match := b.cat.Lookup(id, e.Host)
+		if match.NeverHit {
+			ev.Class = ClassDrift
+			ev.Reason = ReasonNovelPairing
+			ev.Rank = rankNeverHit
+			return ev
+		}
+		if match.Found {
+			ev.Class = ClassKnown
+			return ev
+		}
+		if b.cat.HasHost(e.Host) {
+			hostKnown = true
+		}
+	}
+
+	ev.Class = ClassDrift
+	switch {
+	case !b.identities[idKey]:
+		ev.Reason = ReasonNovelIdentity
+		ev.Rank = rankNovelIdentity
+	case !hostKnown:
+		ev.Reason = ReasonNovelDestination
+		ev.Rank = rankNovelDestination
+	default:
+		ev.Reason = ReasonNovelPairing
+		ev.Rank = rankNovelPairing
+	}
+	return ev
+}
+
+// Analyze classifies a window and returns only drift, highest-signal first.
+func Analyze(window []decisionlog.Entry, b *Baseline) []Event {
+	var out []Event
+	for _, e := range window {
+		ev := b.Classify(e)
+		if ev.Class == ClassDrift {
+			out = append(out, ev)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Rank != out[j].Rank {
+			return out[i].Rank > out[j].Rank
+		}
+		return out[i].FirstSeen.Before(out[j].FirstSeen)
+	})
+	return out
+}
+
+// BuiltThrough is the newest decision-log timestamp folded into this baseline.
+func (b *Baseline) BuiltThrough() time.Time {
+	return b.builtThrough
+}
+
+// IsStale reports whether entries contain traffic newer than this baseline.
+func (b *Baseline) IsStale(entries []decisionlog.Entry) bool {
+	for _, e := range entries {
+		ts, err := time.Parse(time.RFC3339, e.Timestamp)
+		if err == nil && ts.After(b.builtThrough) {
+			return true
+		}
+	}
+	return false
+}
+
+// Save persists the folded baseline maps as a recompute-on-stale cache.
+func (b *Baseline) Save(path string) error {
+	snap := baselineSnapshot{
+		SchemaVersion: baselineSchemaVersion,
+		BuiltThrough:  b.builtThrough.UTC().Format(time.RFC3339),
+		Identities:    sortedKeys(b.identities),
+		Hosts:         sortedKeys(b.hosts),
+		Pairs:         sortedKeys(b.pairs),
+	}
+	data, err := json.MarshalIndent(snap, "", "  ")
+	if err != nil {
+		return fmt.Errorf("drift: marshal baseline: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("drift: mkdir baseline dir: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("drift: write baseline: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("drift: rename baseline: %w", err)
+	}
+	return nil
+}
+
+// LoadBaseline reads a baseline cache and reattaches cat by reference.
+func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, os.ErrNotExist
+	}
+	if err != nil {
+		return nil, fmt.Errorf("drift: read baseline %s: %w", path, err)
+	}
+	var snap baselineSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil, fmt.Errorf("drift: parse baseline: %w", err)
+	}
+	if snap.SchemaVersion != baselineSchemaVersion {
+		return nil, fmt.Errorf("drift: baseline schema version %d unsupported (want %d)", snap.SchemaVersion, baselineSchemaVersion)
+	}
+	builtThrough, _ := time.Parse(time.RFC3339, snap.BuiltThrough)
+	return &Baseline{
+		cat:          cat,
+		identities:   sliceToSet(snap.Identities),
+		hosts:        sliceToSet(snap.Hosts),
+		pairs:        sliceToSet(snap.Pairs),
+		builtThrough: builtThrough,
+	}, nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sliceToSet(s []string) map[string]bool {
+	out := make(map[string]bool, len(s))
+	for _, k := range s {
+		out[k] = true
+	}
+	return out
+}
+
+func identityFromEntry(e decisionlog.Entry) catalog.Identity {
+	base := filepath.Base(e.Exe)
+	if base == "" || base == "." {
+		base = e.Comm
+	}
+	return catalog.Identity{ExeBasename: base, TeamID: e.TeamID}
+}
+
+func identityKey(id catalog.Identity) string {
+	return id.TeamID + "\x00" + id.ExeBasename
+}
+
+func hostKey(host string) string {
+	return strings.ToLower(host)
+}
+
+func pairKey(idKey, hKey string) string {
+	return idKey + "\x00" + hKey
+}

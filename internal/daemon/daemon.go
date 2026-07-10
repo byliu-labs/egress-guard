@@ -1,0 +1,142 @@
+// Package daemon hosts the SNI-filtering TCP proxy. The daemon is given a
+// platform kernel installer (for original-dst recovery), an allowlist, and a
+// decision log; it accepts redirected connections, decides allow/deny/observe,
+// and either splices or closes.
+package daemon
+
+import (
+	"context"
+	"errors"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/byliu-labs/egress-guard/internal/allowlist"
+	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+	"github.com/byliu-labs/egress-guard/internal/drift"
+	"github.com/byliu-labs/egress-guard/internal/exempt"
+	"github.com/byliu-labs/egress-guard/internal/explain"
+	"github.com/byliu-labs/egress-guard/internal/kernel"
+	"github.com/byliu-labs/egress-guard/internal/procid"
+	"github.com/byliu-labs/egress-guard/internal/prompt"
+	"github.com/byliu-labs/egress-guard/internal/signature"
+)
+
+// Options bundles the daemon's runtime dependencies.
+type Options struct {
+	Listen string
+	Kernel kernel.RulesInstaller
+	Allow  *allowlist.Allowlist
+	Log    *decisionlog.Writer
+
+	// v0.2 additions. Nil means "v0.1 behavior preserved" (deny on Unknown).
+	ProcID    procid.Lookup
+	Signature signature.Verifier
+	Exempt    *exempt.Catalog
+	Prompt    prompt.Decider
+
+	// Binder, when non-nil, requires an allowed connection's destination IP to
+	// be one the allowed hostname actually resolves to — closing the
+	// SNI-spoofing bypass where a client names an allowlisted host while
+	// connecting to an attacker IP. Nil = SNI string trusted alone (the
+	// original, spoofable behavior).
+	Binder DestBinder
+
+	// Catalog is consulted before prompting: expected destinations allow
+	// silently and Never hits deny silently.
+	Catalog *catalog.Catalog
+
+	// Baseline enriches prompt requests with the drift reason. Nil keeps
+	// correctness and reports unknown traffic as generic novel pairing.
+	Baseline *drift.Baseline
+
+	// Explainer, when non-nil, produces an advisory model opinion for an
+	// unknown identity/host before the user is prompted. Nil = no opinion
+	// (req.Opinion stays nil, preserving pre-wiring behavior). The call is
+	// bounded by explainTimeout and fails open: a slow, hung, or erroring
+	// explainer never delays admission beyond the bound, never blocks the
+	// prompt from rendering, and never influences the allow/deny verdict.
+	Explainer explain.Explainer
+
+	// Logger surfaces background explainer failures. Nil drops them silently.
+	Logger explain.Logger
+
+	// ObserveOnly puts the daemon in shadow mode: policy verdicts are logged
+	// as Decision=observe but not enforced. Entry.Action keeps the shadow
+	// allow/deny verdict for later drift analysis.
+	ObserveOnly bool
+}
+
+// DestBinder verifies that a destination IP is legitimate for a hostname.
+// Implemented by *dnsbind.Binder; an interface here so tests can stub it.
+type DestBinder interface {
+	DestMatches(host string, ip net.IP) (bool, error)
+}
+
+// Daemon is the running listener.
+type Daemon struct {
+	opts     Options
+	listener net.Listener
+	ready    chan struct{}
+	mu       sync.Mutex
+	// baseline is the drift baseline the decision path consults. It is an
+	// atomic pointer (not opts.Baseline directly) so a background refresher can
+	// swap it while connection goroutines read it without a data race. A nil
+	// pointer is valid and degrades to generic novel-pairing classification.
+	baseline atomic.Pointer[drift.Baseline]
+}
+
+// New creates a daemon. Call Run to start.
+func New(opts Options) (*Daemon, error) {
+	if opts.Allow == nil || opts.Log == nil || opts.Kernel == nil {
+		return nil, errors.New("daemon: Options missing required field")
+	}
+	d := &Daemon{opts: opts, ready: make(chan struct{})}
+	d.baseline.Store(opts.Baseline) // may be nil; atomic.Pointer handles it
+	return d, nil
+}
+
+// SetBaseline atomically swaps the drift baseline the decision path consults.
+// Safe to call from a background refresher while connection goroutines classify.
+// The baseline is observe-only enrichment: swapping it never changes allow/deny.
+func (d *Daemon) SetBaseline(b *drift.Baseline) {
+	d.baseline.Store(b)
+}
+
+// Run starts the listener and serves connections until ctx is cancelled.
+func (d *Daemon) Run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", d.opts.Listen)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.listener = ln
+	d.mu.Unlock()
+	close(d.ready)
+
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return nil
+		}
+		go d.handle(c)
+	}
+}
+
+// WaitListen blocks until the daemon is listening, then returns its address.
+func (d *Daemon) WaitListen() net.Addr {
+	<-d.ready
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.listener.Addr()
+}
+
+// clientHelloDeadline bounds how long we'll wait for the ClientHello.
+const clientHelloDeadline = 5 * time.Second
