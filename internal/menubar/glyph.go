@@ -23,3 +23,11 @@ func Glyph(r cli.StatusReport) (title, tooltip string) {
 		return "⛔", "Not protected: click to install"
 	}
 }
+
+// StatusLine is the one-liner shown as the always-visible top menu item. macOS
+// menu-bar tooltips are unreliable, so the icon's meaning must be readable in
+// the menu itself without hovering.
+func StatusLine(r cli.StatusReport) string {
+	title, tip := Glyph(r)
+	return title + "  " + tip
+}

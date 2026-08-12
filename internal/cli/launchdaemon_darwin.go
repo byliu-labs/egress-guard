@@ -50,6 +50,23 @@ const launchDaemonTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
+// BootDaemonInstalled reports whether the boot-resident system daemon is
+// installed, by stat-ing its LaunchDaemon plist. Unlike `launchctl list
+// <label>`, which needs root to query a system-domain job, stat-ing the plist
+// works from the unprivileged menu bar — so it is the reliable "is protection
+// installed?" signal for gating first-run escalation.
+func BootDaemonInstalled() bool {
+	return launchDaemonInstalled()
+}
+
+// SystemBlockLogPath is where the boot-resident system daemon writes its
+// decision log. Under launchd it runs with HOME=systemStateHome, so stateDir()
+// resolves here. The menu bar (running as the logged-in user) reads this so it
+// reflects the process that actually enforces, not its own ~/.local/state copy.
+func SystemBlockLogPath() string {
+	return filepath.Join(systemStateHome, ".local", "state", "egress-guard", "blocked.log")
+}
+
 func renderLaunchDaemonPlist(binPath string, port int, state string) string {
 	return strings.NewReplacer(
 		"{{LABEL}}", launchDaemonLabel,
