@@ -13,7 +13,7 @@ exfiltrates your credentials over HTTPS to a host you have never heard of.
 
 Framing note: the project has moved from "destination-blocking firewall" to **host-wide
 egress observatory with human-ratified enforcement**. The canonical statement lives in
-`byliu-labs/egress-guard-private` (`PHILOSOPHY.md`, maintainers only); where an older doc
+`byliu-labs/egress-guard-private/PHILOSOPHY.md` (maintainers only — not a file in this repo); where an older doc
 in this repo disagrees on catalog direction, that one wins. Threat models, posture
 reviews and dated implementation plans also live there — this repo ships the code, the
 published catalog format, and the telemetry disclosure.
