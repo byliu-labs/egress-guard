@@ -21,8 +21,10 @@ internal/config/defaults_embedded.toml
 # (settings, worktrees, local state) stays ignored.
 .claude/*
 !.claude/context-map-required
-# Project context for Claude — local only
-CLAUDE.md
+# NOTE: CLAUDE.md files ARE published — they are the repo's agent-facing context
+# tree (root laws + internal/<pkg> leaves), registered in docs/context-map.yaml.
+# They were previously ignored here; the pattern is gone because an ignore rule
+# would silently swallow any NEW leaf someone adds.
 
 # Internal planning & security-review docs — live in egress-guard-private, never publish
 docs/plans/

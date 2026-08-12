@@ -15,6 +15,7 @@ import (
 const recentSlots = 5
 
 type menu struct {
+	status     *systray.MenuItem
 	recent     []*systray.MenuItem
 	allowLast  *systray.MenuItem
 	pause      *systray.MenuItem
@@ -60,12 +61,19 @@ func Run() {
 func onReady() {
 	m := &menu{}
 
-	if FirstRunNeeded() {
+	if FirstRunNeeded() && confirmInstall() {
 		if err := RunAdmin(AdminInstallScript(bundleResourceDir())); err == nil {
 			_ = execFn(installedBinPath, "enable")
 			_, _ = InstallLoginAgent("")
 		}
 	}
+
+	// macOS menu-bar tooltips are unreliable, so the status can't live only in
+	// SetTooltip — surface it as an always-visible, non-clickable first row so
+	// the user reads WHY (e.g. a TUN proxy is bypassing enforcement) on open.
+	m.status = systray.AddMenuItem("", "current protection status")
+	m.status.Disable()
+	systray.AddSeparator()
 
 	m.buildStatusSlots()
 	systray.AddSeparator()
@@ -106,25 +114,26 @@ func (m *menu) buildStatusSlots() {
 }
 
 func (m *menu) refresh() {
-	title, tip := Glyph(cli.Probe())
+	r := cli.Probe()
+	title, tip := Glyph(r)
 	systray.SetTitle(title)
 	systray.SetTooltip(tip)
+	m.status.SetTitle(StatusLine(r))
 
 	blocks, _ := RecentBlocks(recentSlots)
 	for i, it := range m.recent {
 		if i < len(blocks) {
-			it.SetTitle(blocks[i])
+			it.SetTitle(blocks[i].Display)
 			it.Show()
 		} else {
 			it.Hide()
 		}
 	}
-	if n := len(blocks); n > 0 {
-		last := blocks[n-1]
-		host := last
-		if idx := lastIndexTwoSpaces(last); idx >= 0 {
-			host = last[idx+2:]
-		}
+	// Only offer "Allow <host>" when the newest block carries a real host.
+	// A host-less entry (unknown host) would produce an "Allow (unknown host)"
+	// item that AllowHost rejects as an invalid host — a silent no-op.
+	if n := len(blocks); n > 0 && blocks[n-1].Host != "" {
+		host := blocks[n-1].Host
 		m.setLastHost(host)
 		m.allowLast.SetTitle("Allow " + host)
 		m.allowLast.Enable()
@@ -133,15 +142,6 @@ func (m *menu) refresh() {
 	m.setLastHost("")
 	m.allowLast.SetTitle("Allow last blocked host")
 	m.allowLast.Disable()
-}
-
-func lastIndexTwoSpaces(s string) int {
-	for i := len(s) - 2; i >= 0; i-- {
-		if s[i] == ' ' && s[i+1] == ' ' {
-			return i
-		}
-	}
-	return -1
 }
 
 func (m *menu) wireClicks(mUninstall, mQuit *systray.MenuItem) {

@@ -16,8 +16,13 @@ const (
 )
 
 var (
-	statFn        = os.Stat
-	agentLoadedFn = func() bool { return cli.Probe().AgentLoaded }
+	statFn = os.Stat
+	// bootDaemonInstalledFn reports whether protection is already installed.
+	// It stat-s the system daemon's plist (works unprivileged) rather than the
+	// old `com.byliu.egress-guard` agent label, which the current system-daemon
+	// architecture never registers — probing that stale label made
+	// FirstRunNeeded always true, so every relaunch fired a root prompt.
+	bootDaemonInstalledFn = cli.BootDaemonInstalled
 )
 
 // osascriptAdmin returns the AppleScript program that runs shellCmd once behind
@@ -57,10 +62,29 @@ func AdminInstallScript(binDir string) string {
 }
 
 // FirstRunNeeded reports whether the app should offer to self-install: the
-// stable binary is absent, or the daemon LaunchAgent is not loaded.
+// stable binary is absent, or the boot-resident system daemon is not installed.
+// Both conditions are genuine "not installed yet" states — so once installed,
+// routine relaunches return false and never escalate.
 func FirstRunNeeded() bool {
 	if _, err := statFn(installedBinPath); err != nil {
 		return true
 	}
-	return !agentLoadedFn()
+	return !bootDaemonInstalledFn()
+}
+
+// confirmInstall shows a non-privileged, attributed dialog before any privilege
+// escalation. The macOS admin prompt that follows only names "osascript" (the
+// interpreter), giving the user no way to tell who is asking or why — the exact
+// unattributed-escalation hazard this project targets. Until a code-signed
+// helper can raise an OS prompt bearing the app's own identity (see roadmap),
+// this preceding dialog supplies the attribution the system prompt lacks, and
+// lets the user decline before any password box appears. Returns true only if
+// the user explicitly proceeds.
+var confirmInstall = func() bool {
+	const msg = "egress-guard needs administrator access to install its firewall daemon and copy its binaries into /usr/local/bin.\n\nmacOS will show a password prompt next that only says \"osascript\" — that prompt is this installation. Click Cancel here if you did not just launch egress-guard."
+	script := fmt.Sprintf(
+		`display dialog %q with title "egress-guard installer" buttons {"Cancel", "Install"} default button "Install" cancel button "Cancel" with icon caution`,
+		msg)
+	// osascript exits non-zero when the user cancels; zero when Install is clicked.
+	return osascriptFn(script) == nil
 }

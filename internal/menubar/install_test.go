@@ -85,24 +85,27 @@ func TestAdminInstallScript_EscapesMaliciousPath(t *testing.T) {
 }
 
 func TestFirstRunNeeded(t *testing.T) {
-	origStat, origAgent := statFn, agentLoadedFn
-	t.Cleanup(func() { statFn = origStat; agentLoadedFn = origAgent })
+	origStat, origBoot := statFn, bootDaemonInstalledFn
+	t.Cleanup(func() { statFn = origStat; bootDaemonInstalledFn = origBoot })
 
+	// Installed: binary present AND boot daemon installed → no first run, no
+	// escalation. This is the case that regressed: the old agent-label probe
+	// made this true on every launch, firing a root prompt each time.
 	statFn = func(string) (os.FileInfo, error) { return nil, nil }
-	agentLoadedFn = func() bool { return true }
+	bootDaemonInstalledFn = func() bool { return true }
 	if FirstRunNeeded() {
-		t.Errorf("expected FirstRunNeeded=false when installed")
+		t.Errorf("expected FirstRunNeeded=false when installed (binary + boot daemon present)")
 	}
 
 	statFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
-	agentLoadedFn = func() bool { return true }
+	bootDaemonInstalledFn = func() bool { return true }
 	if !FirstRunNeeded() {
 		t.Errorf("expected FirstRunNeeded=true when binary missing")
 	}
 
 	statFn = func(string) (os.FileInfo, error) { return nil, nil }
-	agentLoadedFn = func() bool { return false }
+	bootDaemonInstalledFn = func() bool { return false }
 	if !FirstRunNeeded() {
-		t.Errorf("expected FirstRunNeeded=true when agent not loaded")
+		t.Errorf("expected FirstRunNeeded=true when boot daemon not installed")
 	}
 }
