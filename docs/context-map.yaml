@@ -1,0 +1,74 @@
+# Context ownership map — code globs → the doc that owns their context.
+#
+# Read by ~/.claude/hooks/check-context-map-fresh.sh (advisory, PreToolUse `git commit`,
+# opt-in sentinel .claude/context-map-required): when a commit stages files matching an
+# entry's `watch` patterns but does NOT stage that entry's `doc`, it prints a nudge to
+# update the doc in the same commit (or override with `context-map-ok: <reason>`).
+# It also warns when a watch pattern matches nothing in the repo — a doc whose code has
+# been deleted must have its entry (and usually the doc) deleted too.
+#
+# ── The context tree this map governs ─────────────────────────────────────────────
+# L0  CLAUDE.md                     security laws + architecture + index
+# L1  docs/*.md                     catalog format, telemetry disclosure
+#     (threat models, posture reviews and dated plans live in the private planning repo)
+# L2  internal/<pkg>/CLAUDE.md      package leaves (+ AGENTS.md symlink for Codex)
+#
+# Anti-rot rules (apply to every mapped doc):
+#   1. One fact, one level — a child links up, never restates a parent.
+#   2. No volatile values — no counts, line numbers, or dates-as-state.
+#   3. Docs die with code — deleting the last watched file deletes the map entry.
+#   4. Only map docs someone committed to maintaining.
+
+version: 1
+entries:
+  # The decision tree. Three-valued catalog outcome, baseline-swap safety, log-every-branch.
+  - doc: internal/daemon/CLAUDE.md
+    watch:
+      - '^internal/daemon/.*\.go$'
+      - '^internal/tlsparse/.*\.go$'
+
+  # Privileged boundary: idempotent install, complete removal, ioctl ABI.
+  - doc: internal/kernel/CLAUDE.md
+    watch:
+      - '^internal/kernel/.*\.go$'
+
+  # Human-in-the-loop: timeout denies, coalescing by registrable domain, argv-only dialogs.
+  - doc: internal/prompt/CLAUDE.md
+    watch:
+      - '^internal/prompt/.*\.go$'
+      - '^internal/drift/.*\.go$'
+
+  # Model opinions: HTTPS-only, size-capped, advisory-never-authoritative.
+  - doc: internal/explain/CLAUDE.md
+    watch:
+      - '^internal/explain/.*\.go$'
+
+  # Command surface + install lifecycle + status probing.
+  - doc: internal/cli/CLAUDE.md
+    watch:
+      - '^internal/cli/.*\.go$'
+      - '^cmd/egress-guard/.*\.go$'
+
+  # Menu bar UI: no shell strings, no privilege escalation to read status.
+  - doc: internal/menubar/CLAUDE.md
+    watch:
+      - '^internal/menubar/.*\.go$'
+      - '^cmd/egress-guard-bar/.*\.go$'
+      - '^packaging/mac/.*'
+
+  # The catalog schema is a published format — consumers depend on it.
+  - doc: docs/catalog-format.md
+    watch:
+      - '^internal/catalog/.*\.go$'
+
+  # Disclosure contract: a new telemetry field without a doc edit is a violation.
+  - doc: docs/telemetry-disclosure.md
+    watch:
+      - '^internal/telemetry/.*\.go$'
+      - '^internal/reviewqueue/.*\.go$'
+      - '^cmd/review-queue/.*\.go$'
+
+  # User-visible behavior changes belong in the changelog.
+  - doc: CHANGELOG.md
+    watch:
+      - '^configs/defaults\.toml$'
