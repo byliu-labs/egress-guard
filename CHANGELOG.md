@@ -21,6 +21,17 @@ versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   notice) instead of exiting early — so you can leave it running
   pre-daemon-start without it returning silently.
 
+### Fixed
+- **Menu bar no longer prompts for root on every relaunch.** `FirstRunNeeded`
+  probed a LaunchAgent label the current system-daemon architecture never
+  registers, so it always reported "not installed". It now stat-s the
+  LaunchDaemon plist, which works unprivileged.
+- **The install escalation is now attributed.** A non-privileged dialog naming
+  egress-guard appears before the macOS password prompt, which by itself says
+  only "osascript". You can decline before any password box appears.
+- Status is readable as a top menu item rather than a tooltip, and recent-block
+  entries carry the date, the reason, and the host as a separate field.
+
 ### Removed
 - Linux daemon stubs (`*_linux.go` and `*_linux_test.go` across `internal/{cli,kernel,procid,prompt,signature}`). All ~620 lines were unreachable without a Linux kernel-redirect implementation, which has been deprioritized. Linux support returns later as a config-pack on top of OpenSnitch — a companion tool that translates the egress-guard catalog into OpenSnitch rules rather than a native daemon port. Tracked at #11. The `RulesInstaller` / `Lookup` / `Verifier` / `Notifier` interfaces remain platform-agnostic; non-darwin builds get unsupported stubs that error out clearly instead of silently no-op'ing.
 
