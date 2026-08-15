@@ -64,7 +64,7 @@ func removeStaleSocket(socketPath string) error {
 }
 
 // Serve accepts bridge connections until ctx is cancelled or the listener
-// fails. Each connection carries exactly one request.
+// fails. Each connection carries one or more requests.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	done := make(chan struct{})
 	defer close(done)
@@ -88,35 +88,37 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
-// handleConn handles one request and always closes the connection afterwards.
+// handleConn serves requests until the client closes the connection.
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	req, err := DecodeRequest(conn)
-	if err != nil {
-		return
-	}
-	host, err := tlsparse.ParseSNI(req.ClientHello)
-	if err != nil {
-		s.drop(conn, "", req, "sni_parse_failed: "+err.Error())
-		return
-	}
-	pi, sig, err := s.Resolver.Resolve(req.AuditToken)
-	if err != nil {
-		s.drop(conn, host, req, "identity_resolve_failed: "+err.Error())
-		return
-	}
+	for {
+		req, err := DecodeRequest(conn)
+		if err != nil {
+			return
+		}
+		host, err := tlsparse.ParseSNI(req.ClientHello)
+		if err != nil {
+			s.drop(conn, "", req, "sni_parse_failed: "+err.Error())
+			continue
+		}
+		pi, sig, err := s.Resolver.Resolve(req.AuditToken)
+		if err != nil {
+			s.drop(conn, host, req, "identity_resolve_failed: "+err.Error())
+			continue
+		}
 
-	entry := s.Decider.Decide(host, req.DstIP, pi, sig)
-	entry.DestIP = req.DstIP.String()
-	entry.DestPort = req.DstPort
-	_ = s.Log.Write(entry)
+		entry := s.Decider.Decide(host, req.DstIP, pi, sig)
+		entry.DestIP = req.DstIP.String()
+		entry.DestPort = req.DstPort
+		_ = s.Log.Write(entry)
 
-	verdict := VerdictAllow
-	if entry.Decision == decisionlog.DecisionDeny {
-		verdict = VerdictDrop
+		verdict := VerdictAllow
+		if entry.Decision == decisionlog.DecisionDeny {
+			verdict = VerdictDrop
+		}
+		_ = EncodeResponse(conn, Response{Verdict: verdict, Host: host, Reason: entry.Reason})
 	}
-	_ = EncodeResponse(conn, Response{Verdict: verdict, Host: host, Reason: entry.Reason})
 }
 
 func (s *Server) drop(conn net.Conn, host string, req Request, reason string) {

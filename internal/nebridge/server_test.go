@@ -95,15 +95,15 @@ type testServer struct {
 	logPath string
 }
 
-func newTestServer(t *testing.T, observeOnly bool, resolver IdentityResolver) testServer {
-	t.Helper()
+func newTestServer(tb testing.TB, observeOnly bool, resolver IdentityResolver) testServer {
+	tb.Helper()
 
-	logPath := filepath.Join(t.TempDir(), "decisions.log")
+	logPath := filepath.Join(tb.TempDir(), "decisions.log")
 	log, err := decisionlog.Open(logPath)
 	if err != nil {
-		t.Fatalf("open decision log: %v", err)
+		tb.Fatalf("open decision log: %v", err)
 	}
-	t.Cleanup(func() { _ = log.Close() })
+	tb.Cleanup(func() { _ = log.Close() })
 
 	decider, err := daemon.New(daemon.Options{
 		Listen: "127.0.0.1:0",
@@ -115,45 +115,45 @@ func newTestServer(t *testing.T, observeOnly bool, resolver IdentityResolver) te
 		ObserveOnly: observeOnly,
 	})
 	if err != nil {
-		t.Fatalf("new daemon: %v", err)
+		tb.Fatalf("new daemon: %v", err)
 	}
 
-	path := testSocketPath(t)
+	path := testSocketPath(tb)
 	ln, err := Listen(path)
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		tb.Fatalf("listen: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- (&Server{Decider: decider, Resolver: resolver, Log: log}).Serve(ctx, ln) }()
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		cancel()
 		_ = ln.Close()
 		if err := <-serveDone; err != nil {
-			t.Errorf("Serve: %v", err)
+			tb.Errorf("Serve: %v", err)
 		}
 	})
 
 	return testServer{path: path, logPath: logPath}
 }
 
-func testSocketPath(t *testing.T) string {
-	t.Helper()
+func testSocketPath(tb testing.TB) string {
+	tb.Helper()
 
-	socketDir := t.TempDir()
+	socketDir := tb.TempDir()
 	shortParent, err := os.MkdirTemp("", "nebridge-")
 	if err != nil {
-		t.Fatalf("make short socket path: %v", err)
+		tb.Fatalf("make short socket path: %v", err)
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		if err := os.RemoveAll(shortParent); err != nil {
-			t.Errorf("remove short socket path: %v", err)
+			tb.Errorf("remove short socket path: %v", err)
 		}
 	})
 
 	shortSocketDir := filepath.Join(shortParent, "d")
 	if err := os.Symlink(socketDir, shortSocketDir); err != nil {
-		t.Fatalf("link short socket path: %v", err)
+		tb.Fatalf("link short socket path: %v", err)
 	}
 	return filepath.Join(shortSocketDir, "s")
 }
