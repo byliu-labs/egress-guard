@@ -87,7 +87,7 @@ func run(args []string) error {
 		return fmt.Errorf("nebridge-proto: create daemon: %w", err)
 	}
 
-	resolver := nebridge.NewSystemResolver(signature.Default())
+	var resolver nebridge.IdentityResolver = nebridge.NewSystemResolver(signature.Default())
 	if *testStubIdentity {
 		resolver = nebridge.StubResolver{Proc: procid.ProcInfo{Comm: "nebridge-proto-test"}}
 	}
