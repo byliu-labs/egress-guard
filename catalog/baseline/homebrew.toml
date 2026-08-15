@@ -1,0 +1,22 @@
+# Baseline allowlist facts for Homebrew.
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "Homebrew reads formula and cask metadata from formulae.brew.sh and pulls bottles from GitHub Container Registry and GitHub-hosted assets; verified against Homebrew's documented default domains."
+explanation    = "Homebrew fetches package metadata and precompiled bottles."
+
+[entry.identity]
+exe_basename = "brew"
+
+[[entry.expected_destinations]]
+host = "formulae.brew.sh"
+why  = "Formula and cask metadata API"
+
+[[entry.expected_destinations]]
+host = "ghcr.io"
+why  = "Default bottle storage in GitHub Container Registry"
+
+[[entry.expected_destinations]]
+host = "objects.githubusercontent.com"
+why  = "GitHub-hosted bottle and source assets"

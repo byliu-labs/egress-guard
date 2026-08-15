@@ -1,0 +1,161 @@
+[[entry]]
+  schema_version = 1
+  explanation = "Claude command-line tools send requests to the Anthropic API."
+  evidence = "Claude Code and Anthropic API tooling call api.anthropic.com as the published API base URL."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "claude"
+
+  [[entry.expected_destinations]]
+    host = "api.anthropic.com"
+    why = "Anthropic API"
+
+[[entry]]
+  schema_version = 1
+  explanation = "ollama downloads local model weights from the Ollama registry."
+  evidence = "ollama pulls model manifests and blobs from registry.ollama.ai and may visit ollama.com for model catalog metadata and redirects; verified against Ollama's default registry behavior."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "ollama"
+
+  [[entry.expected_destinations]]
+    host = "registry.ollama.ai"
+    why = "Ollama model registry"
+
+  [[entry.expected_destinations]]
+    host = "ollama.com"
+    why = "Ollama model catalog and redirects"
+
+[[entry]]
+  schema_version = 1
+  explanation = "git clones, fetches, and downloads repository assets from GitHub."
+  evidence = "git clone/fetch over HTTPS contacts github.com; GitHub archive and release assets are served from codeload.github.com and objects.githubusercontent.com. Verified against GitHub's documented domains."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "git"
+
+  [[entry.expected_destinations]]
+    host = "github.com"
+    why = "git HTTPS transport and ref negotiation"
+
+  [[entry.expected_destinations]]
+    host = "codeload.github.com"
+    why = "tarball and zipball archive downloads"
+
+  [[entry.expected_destinations]]
+    host = "objects.githubusercontent.com"
+    why = "release and Git LFS object storage"
+
+[[entry]]
+  schema_version = 1
+  explanation = "The GitHub CLI calls the GitHub API and GitHub web endpoints."
+  evidence = "gh calls api.github.com for GitHub API operations and github.com for web/device-flow endpoints; verified against GitHub CLI behavior and documentation."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "gh"
+
+  [[entry.expected_destinations]]
+    host = "api.github.com"
+    why = "GitHub REST and GraphQL API"
+
+  [[entry.expected_destinations]]
+    host = "github.com"
+    why = "OAuth device flow and web endpoints"
+
+[[entry]]
+  schema_version = 1
+  explanation = "Homebrew fetches package metadata and precompiled bottles."
+  evidence = "Homebrew reads formula and cask metadata from formulae.brew.sh and pulls bottles from GitHub Container Registry and GitHub-hosted assets; verified against Homebrew's documented default domains."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "brew"
+
+  [[entry.expected_destinations]]
+    host = "formulae.brew.sh"
+    why = "Formula and cask metadata API"
+
+  [[entry.expected_destinations]]
+    host = "ghcr.io"
+    why = "Default bottle storage in GitHub Container Registry"
+
+  [[entry.expected_destinations]]
+    host = "objects.githubusercontent.com"
+    why = "GitHub-hosted bottle and source assets"
+
+[[entry]]
+  schema_version = 1
+  explanation = "npm downloads Node packages from the public npm registry."
+  evidence = "npm's default registry is https://registry.npmjs.org; verified against npm configuration and documentation."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "npm"
+
+  [[entry.expected_destinations]]
+    host = "registry.npmjs.org"
+    why = "npm package registry"
+
+[[entry]]
+  schema_version = 1
+  explanation = "pnpm downloads Node packages from the public npm registry."
+  evidence = "pnpm defaults to the public npm registry unless configured otherwise; verified against pnpm documentation."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "pnpm"
+
+  [[entry.expected_destinations]]
+    host = "registry.npmjs.org"
+    why = "npm package registry"
+
+[[entry]]
+  schema_version = 1
+  explanation = "yarn downloads Node packages from the public npm registry."
+  evidence = "Yarn defaults to the npm-compatible public registry; verified against Yarn configuration documentation."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "yarn"
+
+  [[entry.expected_destinations]]
+    host = "registry.npmjs.org"
+    why = "npm package registry"
+
+[[entry]]
+  schema_version = 1
+  explanation = "pip downloads Python packages from PyPI and its file CDN."
+  evidence = "pip uses https://pypi.org/simple by default and package files are served from files.pythonhosted.org; verified against pip and PyPI documentation."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "pip"
+
+  [[entry.expected_destinations]]
+    host = "pypi.org"
+    why = "PyPI package index API"
+
+  [[entry.expected_destinations]]
+    host = "files.pythonhosted.org"
+    why = "PyPI package file CDN"
+
+[[entry]]
+  schema_version = 1
+  explanation = "uv resolves and downloads Python packages from PyPI."
+  evidence = "uv resolves from PyPI by default using the same public index and file-hosting endpoints as pip; verified against uv's published default index behavior."
+  confidence = "medium"
+  layer = "baseline"
+  [entry.identity]
+    exe_basename = "uv"
+
+  [[entry.expected_destinations]]
+    host = "pypi.org"
+    why = "PyPI package index API"
+
+  [[entry.expected_destinations]]
+    host = "files.pythonhosted.org"
+    why = "PyPI package file CDN"

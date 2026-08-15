@@ -43,6 +43,8 @@ func main() {
 		err = cli.ExemptApp(args)
 	case "telemetry":
 		err = cli.Telemetry(args)
+	case "catalog":
+		err = cli.Catalog(args)
 	default:
 		fmt.Fprintf(os.Stderr, "egress-guard: unknown subcommand %q\n", os.Args[1])
 		usage()
@@ -72,6 +74,7 @@ Commands (v0.1):
   tail          Follow the block log
   exempt-app    Manage user-added exempt apps (add/remove/list)
   telemetry     Manage opt-in telemetry (enable/disable/status)
+  catalog       Fetch and install the public baseline catalog
   version       Print version
 `)
 }

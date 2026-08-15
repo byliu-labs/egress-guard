@@ -1,0 +1,20 @@
+# Linux system and browser rules. Runtime matching treats package as TeamID.
+[[linux]]
+exe_basename = "firefox"
+package      = "firefox"
+
+[[linux]]
+exe_basename = "google-chrome"
+package      = "google-chrome-stable"
+
+[[linux]]
+exe_basename = "systemd-resolved"
+package      = "systemd"
+
+[[linux]]
+exe_basename = "NetworkManager"
+package      = "network-manager"
+
+[[linux]]
+exe_basename = "gnome-shell"
+package      = "gnome-shell"

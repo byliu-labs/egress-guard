@@ -1,0 +1,40 @@
+# Baseline allowlist facts for git and the GitHub CLI.
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "git clone/fetch over HTTPS contacts github.com; GitHub archive and release assets are served from codeload.github.com and objects.githubusercontent.com. Verified against GitHub's documented domains."
+explanation    = "git clones, fetches, and downloads repository assets from GitHub."
+
+[entry.identity]
+exe_basename = "git"
+
+[[entry.expected_destinations]]
+host = "github.com"
+why  = "git HTTPS transport and ref negotiation"
+
+[[entry.expected_destinations]]
+host = "codeload.github.com"
+why  = "tarball and zipball archive downloads"
+
+[[entry.expected_destinations]]
+host = "objects.githubusercontent.com"
+why  = "release and Git LFS object storage"
+
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "gh calls api.github.com for GitHub API operations and github.com for web/device-flow endpoints; verified against GitHub CLI behavior and documentation."
+explanation    = "The GitHub CLI calls the GitHub API and GitHub web endpoints."
+
+[entry.identity]
+exe_basename = "gh"
+
+[[entry.expected_destinations]]
+host = "api.github.com"
+why  = "GitHub REST and GraphQL API"
+
+[[entry.expected_destinations]]
+host = "github.com"
+why  = "OAuth device flow and web endpoints"

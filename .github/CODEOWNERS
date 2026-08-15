@@ -1,0 +1,6 @@
+# Catalog changes require maintainer review.
+/catalog/                                @byliu-labs
+/catalog/baseline/                       @byliu-labs
+/catalog/exempt/                         @byliu-labs
+/internal/catalogbuild/                  @byliu-labs
+/.github/workflows/catalog-refresh.yml   @byliu-labs

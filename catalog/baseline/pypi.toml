@@ -1,0 +1,36 @@
+# Baseline allowlist facts for the Python package toolchain.
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "pip uses https://pypi.org/simple by default and package files are served from files.pythonhosted.org; verified against pip and PyPI documentation."
+explanation    = "pip downloads Python packages from PyPI and its file CDN."
+
+[entry.identity]
+exe_basename = "pip"
+
+[[entry.expected_destinations]]
+host = "pypi.org"
+why  = "PyPI package index API"
+
+[[entry.expected_destinations]]
+host = "files.pythonhosted.org"
+why  = "PyPI package file CDN"
+
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "uv resolves from PyPI by default using the same public index and file-hosting endpoints as pip; verified against uv's published default index behavior."
+explanation    = "uv resolves and downloads Python packages from PyPI."
+
+[entry.identity]
+exe_basename = "uv"
+
+[[entry.expected_destinations]]
+host = "pypi.org"
+why  = "PyPI package index API"
+
+[[entry.expected_destinations]]
+host = "files.pythonhosted.org"
+why  = "PyPI package file CDN"

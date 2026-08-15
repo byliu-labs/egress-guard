@@ -1,0 +1,42 @@
+# Baseline allowlist facts for the Node package toolchain.
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "npm's default registry is https://registry.npmjs.org; verified against npm configuration and documentation."
+explanation    = "npm downloads Node packages from the public npm registry."
+
+[entry.identity]
+exe_basename = "npm"
+
+[[entry.expected_destinations]]
+host = "registry.npmjs.org"
+why  = "npm package registry"
+
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "pnpm defaults to the public npm registry unless configured otherwise; verified against pnpm documentation."
+explanation    = "pnpm downloads Node packages from the public npm registry."
+
+[entry.identity]
+exe_basename = "pnpm"
+
+[[entry.expected_destinations]]
+host = "registry.npmjs.org"
+why  = "npm package registry"
+
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "Yarn defaults to the npm-compatible public registry; verified against Yarn configuration documentation."
+explanation    = "yarn downloads Node packages from the public npm registry."
+
+[entry.identity]
+exe_basename = "yarn"
+
+[[entry.expected_destinations]]
+host = "registry.npmjs.org"
+why  = "npm package registry"
