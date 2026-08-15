@@ -16,6 +16,7 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/config"
 	"github.com/byliu-labs/egress-guard/internal/daemon"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+	"github.com/byliu-labs/egress-guard/internal/dnsbind"
 	"github.com/byliu-labs/egress-guard/internal/kernel"
 	"github.com/byliu-labs/egress-guard/internal/nebridge"
 	"github.com/byliu-labs/egress-guard/internal/procid"
@@ -31,16 +32,21 @@ func main() {
 }
 
 func run(args []string) error {
+	defaultLogPath, err := defaultDecisionLogPath()
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("nebridge-proto", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	socketPath := flags.String("socket", defaultSocket, "Unix socket path")
 	allowlistPath := flags.String("allowlist", "", "allowlist TOML path")
-	logPath := flags.String("log", "", "decision log path")
+	logPath := flags.String("log", defaultLogPath, "decision log path")
 	observeOnly := flags.Bool("observe", false, "log decisions without enforcing drops")
 	testStubIdentity := flags.Bool("test-stub-identity", false, "")
 	flags.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: nebridge-proto -allowlist <path> -log <path> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: nebridge-proto -allowlist <path> [flags]")
 		fmt.Fprintln(os.Stderr, "  -socket <path>")
+		fmt.Fprintf(os.Stderr, "  -log <path> (default %s)\n", defaultLogPath)
 		fmt.Fprintln(os.Stderr, "  -observe")
 	}
 	if err := flags.Parse(args); err != nil {
@@ -49,10 +55,6 @@ func run(args []string) error {
 	if *allowlistPath == "" {
 		return errors.New("nebridge-proto: -allowlist is required")
 	}
-	if *logPath == "" {
-		return errors.New("nebridge-proto: -log is required")
-	}
-
 	defaults, err := config.LoadDefaults()
 	if err != nil {
 		return fmt.Errorf("nebridge-proto: load default allowlist: %w", err)
@@ -81,13 +83,14 @@ func run(args []string) error {
 		Allow:       allow,
 		Log:         decisionLog,
 		Catalog:     liveCatalog,
+		Binder:      dnsbind.New(),
 		ObserveOnly: *observeOnly,
 	})
 	if err != nil {
 		return fmt.Errorf("nebridge-proto: create daemon: %w", err)
 	}
 
-	var resolver nebridge.IdentityResolver = nebridge.NewSystemResolver(signature.Default())
+	var resolver nebridge.IdentityResolver = productionIdentityResolver()
 	if *testStubIdentity {
 		resolver = nebridge.StubResolver{Proc: procid.ProcInfo{Comm: "nebridge-proto-test"}}
 	}
@@ -96,10 +99,24 @@ func run(args []string) error {
 		return err
 	}
 	defer listener.Close()
+	fmt.Fprintf(os.Stderr, "nebridge: listening on %s\n", *socketPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	return (&nebridge.Server{Decider: decider, Resolver: resolver, Log: decisionLog}).Serve(ctx, listener)
+}
+
+func productionIdentityResolver() nebridge.IdentityResolver {
+	verifier := signature.NewCachingVerifier(signature.Default(), 256)
+	return nebridge.NewSystemResolver(verifier)
+}
+
+func defaultDecisionLogPath() (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("nebridge-proto: resolve user cache directory: %w", err)
+	}
+	return filepath.Join(cacheDir, "egress-guard", "nebridge-decisions.log"), nil
 }
 
 func loadLayeredCatalog() (*catalog.Catalog, error) {

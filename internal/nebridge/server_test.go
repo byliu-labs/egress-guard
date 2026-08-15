@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
 	"github.com/byliu-labs/egress-guard/internal/daemon"
@@ -90,7 +92,36 @@ func TestServer_ResolverErrorDrops(t *testing.T) {
 	}
 }
 
-func TestListen_PreservesExistingDirectoryPermissions(t *testing.T) {
+func TestServer_SNIDestinationMismatchDrops(t *testing.T) {
+	server := newTestServerWithBinder(t, false, StubResolver{}, stubBinder{matches: false})
+
+	response := server.request(t, "allow.example", nil)
+
+	if response.Verdict != VerdictDrop || response.Reason != "sni_ip_mismatch" {
+		t.Fatalf("response = %+v, want drop with sni_ip_mismatch", response)
+	}
+}
+
+func TestServer_DNSFailureDrops(t *testing.T) {
+	server := newTestServerWithBinder(t, false, StubResolver{}, stubBinder{err: errors.New("resolver unavailable")})
+
+	response := server.request(t, "allow.example", nil)
+
+	if response.Verdict != VerdictDrop || response.Reason != "sni_ip_unverifiable" {
+		t.Fatalf("response = %+v, want drop with sni_ip_unverifiable", response)
+	}
+}
+
+type stubBinder struct {
+	matches bool
+	err     error
+}
+
+func (b stubBinder) DestMatches(string, net.IP) (bool, error) {
+	return b.matches, b.err
+}
+
+func TestListen_RejectsUnsafeExistingDirectoryPermissions(t *testing.T) {
 	parent, err := os.MkdirTemp("", "nb-")
 	if err != nil {
 		t.Fatalf("create short socket parent: %v", err)
@@ -108,11 +139,10 @@ func TestListen_PreservesExistingDirectoryPermissions(t *testing.T) {
 		t.Fatalf("set shared directory permissions: %v", err)
 	}
 
-	listener, err := Listen(filepath.Join(dir, "s"))
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
+	_, err = Listen(filepath.Join(dir, "s"))
+	if err == nil || !strings.Contains(err.Error(), "mode 755, want 700") {
+		t.Fatalf("Listen error = %v, want unsafe mode rejection", err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
 
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -121,7 +151,34 @@ func TestListen_PreservesExistingDirectoryPermissions(t *testing.T) {
 	if mode := info.Mode().Perm(); mode != 0o755 {
 		t.Fatalf("shared directory mode = %o, want 755", mode)
 	}
-	socketInfo, err := os.Stat(filepath.Join(dir, "s"))
+	if _, err := os.Lstat(filepath.Join(dir, "s")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe directory socket path error = %v, want not exist", err)
+	}
+}
+
+func TestListen_CreatesPrivateDirectoryAndSocket(t *testing.T) {
+	parent, err := os.MkdirTemp("", "nb-")
+	if err != nil {
+		t.Fatalf("create short socket parent: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(parent) })
+	dir := filepath.Join(parent, "socket-dir")
+	socketPath := filepath.Join(dir, "s")
+
+	listener, err := Listen(socketPath)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat socket directory: %v", err)
+	}
+	if mode := dirInfo.Mode().Perm(); mode != 0o700 {
+		t.Fatalf("socket directory mode = %o, want 700", mode)
+	}
+	socketInfo, err := os.Stat(socketPath)
 	if err != nil {
 		t.Fatalf("stat socket: %v", err)
 	}
@@ -130,12 +187,60 @@ func TestListen_PreservesExistingDirectoryPermissions(t *testing.T) {
 	}
 }
 
+func TestListen_RejectsSymlinkedSocketDirectory(t *testing.T) {
+	parent, err := os.MkdirTemp("", "nb-")
+	if err != nil {
+		t.Fatalf("create short socket parent: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(parent) })
+	target := filepath.Join(parent, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("create target directory: %v", err)
+	}
+	link := filepath.Join(parent, "socket-dir")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("create socket directory symlink: %v", err)
+	}
+
+	_, err = Listen(filepath.Join(link, "s"))
+	if err == nil || !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("Listen error = %v, want symlink rejection", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "s")); !os.IsNotExist(err) {
+		t.Fatalf("symlink target socket path error = %v, want not exist", err)
+	}
+}
+
+func TestValidateSocketDirectory_RejectsWrongOwner(t *testing.T) {
+	info := fakeFileInfo{mode: os.ModeDir | 0o700, uid: uint32(os.Geteuid() + 1)}
+	err := validateSocketDirectory("/tmp/unsafe", info)
+	if err == nil || !strings.Contains(err.Error(), "is owned by euid") {
+		t.Fatalf("validateSocketDirectory error = %v, want owner rejection", err)
+	}
+}
+
+type fakeFileInfo struct {
+	mode os.FileMode
+	uid  uint32
+}
+
+func (f fakeFileInfo) Name() string       { return "socket-dir" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeFileInfo) Sys() any           { return &syscall.Stat_t{Uid: f.uid} }
+
 type testServer struct {
 	path    string
 	logPath string
 }
 
 func newTestServer(tb testing.TB, observeOnly bool, resolver IdentityResolver) testServer {
+	return newTestServerWithBinder(tb, observeOnly, resolver, nil)
+}
+
+func newTestServerWithBinder(tb testing.TB, observeOnly bool, resolver IdentityResolver, binder daemon.DestBinder) testServer {
 	tb.Helper()
 
 	logPath := filepath.Join(tb.TempDir(), "decisions.log")
@@ -152,6 +257,7 @@ func newTestServer(tb testing.TB, observeOnly bool, resolver IdentityResolver) t
 			Defaults: allowlist.Layer{Allow: []string{"allow.example"}},
 		}),
 		Log:         log,
+		Binder:      binder,
 		ObserveOnly: observeOnly,
 	})
 	if err != nil {
@@ -180,7 +286,6 @@ func newTestServer(tb testing.TB, observeOnly bool, resolver IdentityResolver) t
 func testSocketPath(tb testing.TB) string {
 	tb.Helper()
 
-	socketDir := tb.TempDir()
 	shortParent, err := os.MkdirTemp("", "nebridge-")
 	if err != nil {
 		tb.Fatalf("make short socket path: %v", err)
@@ -191,11 +296,7 @@ func testSocketPath(tb testing.TB) string {
 		}
 	})
 
-	shortSocketDir := filepath.Join(shortParent, "d")
-	if err := os.Symlink(socketDir, shortSocketDir); err != nil {
-		tb.Fatalf("link short socket path: %v", err)
-	}
-	return filepath.Join(shortSocketDir, "s")
+	return filepath.Join(shortParent, "d", "s")
 }
 
 func (s testServer) request(t *testing.T, host string, clientHello []byte) Response {

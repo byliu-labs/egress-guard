@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/procid"
@@ -26,12 +27,13 @@ type Server struct {
 	Log      *decisionlog.Writer
 }
 
-// Listen creates a Unix-domain listener. New socket directories are private;
-// existing parent directories are left unchanged and the socket itself is 0600.
+// Listen creates a Unix-domain listener in a private directory owned by this
+// process's effective user. It rejects pre-existing unsafe directories instead
+// of repairing or following them, then limits stale-path removal to sockets.
 func Listen(socketPath string) (net.Listener, error) {
 	dir := filepath.Dir(socketPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("nebridge: create socket directory: %w", err)
+	if err := ensureSocketDirectory(dir); err != nil {
+		return nil, err
 	}
 	if err := removeStaleSocket(socketPath); err != nil {
 		return nil, err
@@ -45,6 +47,37 @@ func Listen(socketPath string) (net.Listener, error) {
 		return nil, fmt.Errorf("nebridge: set socket permissions: %w", err)
 	}
 	return ln, nil
+}
+
+func ensureSocketDirectory(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("nebridge: create socket directory %s: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("nebridge: inspect socket directory %s: %w", dir, err)
+	}
+	return validateSocketDirectory(dir, info)
+}
+
+func validateSocketDirectory(dir string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("nebridge: socket directory is a symlink: %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("nebridge: socket directory is not a directory: %s", dir)
+	}
+	if mode := info.Mode().Perm(); mode != 0o700 {
+		return fmt.Errorf("nebridge: socket directory %s has mode %o, want 700", dir, mode)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("nebridge: cannot determine socket directory owner: %s", dir)
+	}
+	if owner := int(stat.Uid); owner != os.Geteuid() {
+		return fmt.Errorf("nebridge: socket directory %s is owned by euid %d, want %d", dir, owner, os.Geteuid())
+	}
+	return nil
 }
 
 func removeStaleSocket(socketPath string) error {

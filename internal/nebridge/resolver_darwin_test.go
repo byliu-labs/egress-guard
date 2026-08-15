@@ -6,15 +6,17 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
 func TestSystemResolver_OwnToken(t *testing.T) {
-	var token [32]byte
-	// audit_token_t is eight native-endian uint32_t values; pid is val[5].
-	binary.NativeEndian.PutUint32(token[5*4:], uint32(os.Getpid()))
+	token, err := currentProcessAuditToken()
+	if err != nil {
+		t.Fatalf("currentProcessAuditToken: %v", err)
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -43,5 +45,31 @@ func TestSystemResolver_OwnToken(t *testing.T) {
 	}
 	if !id.Valid {
 		t.Errorf("signed identity = %+v, want valid test identity", id)
+	}
+}
+
+func TestSystemResolver_TamperedPIDVersionFailsClosed(t *testing.T) {
+	token, err := currentProcessAuditToken()
+	if err != nil {
+		t.Fatalf("currentProcessAuditToken: %v", err)
+	}
+	pidVersion := binary.NativeEndian.Uint32(token[7*4:])
+	binary.NativeEndian.PutUint32(token[7*4:], pidVersion+1)
+
+	_, _, err = NewSystemResolver(signature.NewStub()).Resolve(token)
+	if err == nil || !strings.Contains(err.Error(), "Security.framework rejected audit token") {
+		t.Fatalf("Resolve error = %v, want Security.framework audit-token rejection", err)
+	}
+}
+
+func TestNewSystemResolver_NilVerifierFailsClosedOrVerifies(t *testing.T) {
+	token, err := currentProcessAuditToken()
+	if err != nil {
+		t.Fatalf("currentProcessAuditToken: %v", err)
+	}
+
+	_, _, err = NewSystemResolver(nil).Resolve(token)
+	if err != nil && !strings.Contains(err.Error(), "nebridge: verify") {
+		t.Fatalf("Resolve with default verifier error = %v, want signature verification result", err)
 	}
 }
