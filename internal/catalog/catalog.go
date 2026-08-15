@@ -61,6 +61,12 @@ type Catalog struct {
 	entries []Entry
 }
 
+// LayerFile identifies one named catalog layer to load at startup.
+type LayerFile struct {
+	Name string
+	Path string
+}
+
 // MatchResult is the answer to whether the catalog has a fact about an
 // identity and host pairing.
 type MatchResult struct {
@@ -96,6 +102,23 @@ func LoadFile(path string) (*Catalog, error) {
 		return nil, fmt.Errorf("catalog: read %s: %w", path, err)
 	}
 	return Load(b)
+}
+
+// LoadLayers merges the supplied catalog layers in order. Missing files are
+// empty layers; malformed or unreadable files prevent startup.
+func LoadLayers(layers ...LayerFile) (*Catalog, error) {
+	live := &Catalog{}
+	for _, layer := range layers {
+		loaded, err := LoadFile(layer.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("load %s catalog %s: %w", layer.Name, layer.Path, err)
+		}
+		live.Merge(loaded)
+	}
+	return live, nil
 }
 
 // Merge appends other's entries. Call only during startup, before concurrent

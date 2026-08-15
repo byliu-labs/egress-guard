@@ -20,6 +20,7 @@ func NewSystemResolver(verifier signature.Verifier) IdentityResolver {
 }
 
 type systemResolver struct {
+	// verifier is retained for Task 7's Darwin audit-token implementation.
 	verifier signature.Verifier
 }
 

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -17,10 +18,11 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/kernel"
 	"github.com/byliu-labs/egress-guard/internal/nebridge"
+	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
-const defaultSocket = "/tmp/egress-guard-nefilter.sock"
+const defaultSocket = "/tmp/egress-guard-nefilter/nebridge.sock"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -70,11 +72,15 @@ func run(args []string) error {
 	}
 	defer decisionLog.Close()
 
+	liveCatalog, err := loadLayeredCatalog()
+	if err != nil {
+		return err
+	}
 	decider, err := daemon.New(daemon.Options{
 		Kernel:      kernel.Default(),
 		Allow:       allow,
 		Log:         decisionLog,
-		Catalog:     &catalog.Catalog{},
+		Catalog:     liveCatalog,
 		ObserveOnly: *observeOnly,
 	})
 	if err != nil {
@@ -83,7 +89,7 @@ func run(args []string) error {
 
 	resolver := nebridge.NewSystemResolver(signature.Default())
 	if *testStubIdentity {
-		resolver = nebridge.StubResolver{}
+		resolver = nebridge.StubResolver{Proc: procid.ProcInfo{Comm: "nebridge-proto-test"}}
 	}
 	listener, err := nebridge.Listen(*socketPath)
 	if err != nil {
@@ -94,4 +100,20 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	return (&nebridge.Server{Decider: decider, Resolver: resolver, Log: decisionLog}).Serve(ctx, listener)
+}
+
+func loadLayeredCatalog() (*catalog.Catalog, error) {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("nebridge-proto: resolve home directory: %w", err)
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	configDir := filepath.Join(configHome, "egress-guard")
+	return catalog.LoadLayers(
+		catalog.LayerFile{Name: "baseline", Path: filepath.Join(configDir, "catalog-baseline.toml")},
+		catalog.LayerFile{Name: "user", Path: filepath.Join(configDir, "catalog-user.toml")},
+	)
 }

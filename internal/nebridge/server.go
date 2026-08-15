@@ -26,15 +26,12 @@ type Server struct {
 	Log      *decisionlog.Writer
 }
 
-// Listen creates a Unix-domain listener. The containing directory is private
-// because peers with access to the socket can request egress decisions.
+// Listen creates a Unix-domain listener. New socket directories are private;
+// existing parent directories are left unchanged and the socket itself is 0600.
 func Listen(socketPath string) (net.Listener, error) {
 	dir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("nebridge: create socket directory: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("nebridge: set socket directory permissions: %w", err)
 	}
 	if err := removeStaleSocket(socketPath); err != nil {
 		return nil, err
@@ -42,6 +39,10 @@ func Listen(socketPath string) (net.Listener, error) {
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("nebridge: listen on %s: %w", socketPath, err)
+	}
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("nebridge: set socket permissions: %w", err)
 	}
 	return ln, nil
 }

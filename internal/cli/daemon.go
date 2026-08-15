@@ -307,21 +307,10 @@ func buildExplainer(warn func(format string, args ...any)) explain.Explainer {
 // baseline the maintainer intended to enforce. Deny (Never) in any layer wins
 // in catalog.Lookup, so merge order is not security-relevant.
 func loadLayeredCatalog(baselinePath, userPath string) (*catalog.Catalog, error) {
-	live := &catalog.Catalog{}
-	for _, layer := range []struct{ name, path string }{
-		{"baseline", baselinePath},
-		{"user", userPath},
-	} {
-		c, err := catalog.LoadFile(layer.path)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("load %s catalog %s: %w", layer.name, layer.path, err)
-		}
-		live.Merge(c)
-	}
-	return live, nil
+	return catalog.LoadLayers(
+		catalog.LayerFile{Name: "baseline", Path: baselinePath},
+		catalog.LayerFile{Name: "user", Path: userPath},
+	)
 }
 
 // baselineRefreshInterval is how often the daemon rebuilds its drift baseline

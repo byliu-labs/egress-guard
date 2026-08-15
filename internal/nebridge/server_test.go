@@ -90,6 +90,46 @@ func TestServer_ResolverErrorDrops(t *testing.T) {
 	}
 }
 
+func TestListen_PreservesExistingDirectoryPermissions(t *testing.T) {
+	parent, err := os.MkdirTemp("", "nb-")
+	if err != nil {
+		t.Fatalf("create short socket parent: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(parent); err != nil {
+			t.Errorf("remove socket parent: %v", err)
+		}
+	})
+	dir := filepath.Join(parent, "shared")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("create shared directory: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("set shared directory permissions: %v", err)
+	}
+
+	listener, err := Listen(filepath.Join(dir, "s"))
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat shared directory: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o755 {
+		t.Fatalf("shared directory mode = %o, want 755", mode)
+	}
+	socketInfo, err := os.Stat(filepath.Join(dir, "s"))
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	if mode := socketInfo.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("socket mode = %o, want 600", mode)
+	}
+}
+
 type testServer struct {
 	path    string
 	logPath string
