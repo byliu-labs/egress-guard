@@ -127,8 +127,12 @@ func parseSNIExtension(data []byte) (string, error) {
 	return "", ErrNoSNI
 }
 
-// buildClientHelloHelper is exposed to the test file (same package) so the
-// test can construct ClientHellos without depending on real network captures.
+// BuildClientHelloForTest constructs a raw ClientHello fixture without
+// depending on a real network capture.
+func BuildClientHelloForTest(sni string, includeSNI bool) []byte {
+	return buildClientHelloHelper(sni, includeSNI)
+}
+
 func buildClientHelloHelper(sni string, includeSNI bool) []byte {
 	body := make([]byte, 0, 256)
 	body = append(body, 0x03, 0x03)             // version TLS 1.2
