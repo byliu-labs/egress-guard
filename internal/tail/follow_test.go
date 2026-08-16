@@ -3,6 +3,7 @@ package tail
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -36,12 +37,8 @@ func (b *safeBuffer) String() string {
 // event arrives in <50ms.
 func waitFor(t *testing.T, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if waitUntil(fn) {
+		return
 	}
 	t.Fatalf("waitFor: condition not met within 5s")
 }
@@ -143,21 +140,41 @@ func TestFollower_WaitsForLateCreate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- f.Follow(ctx) }()
-	time.Sleep(100 * time.Millisecond)
+	appendDone := make(chan error, 1)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		// Now create the file and write to it; the follower should pick it up.
+		if err := appendLine(path, "FIRST\n"); err != nil {
+			appendDone <- err
+			cancel()
+			return
+		}
+		if !waitUntil(func() bool { return out.String() == "FIRST\n" }) {
+			appendDone <- errors.New("late-created file was not drained within 5s; got " + out.String())
+			cancel()
+			return
+		}
+		appendDone <- nil
+		cancel()
+	}()
 
-	// Now create the file and write to it; the follower should pick it up.
-	if err := appendLine(path, "FIRST\n"); err != nil {
-		t.Fatalf("create+append: %v", err)
-	}
-
-	waitFor(t, func() bool { return out.String() == "FIRST\n" })
-
-	cancel()
-	if err := <-errCh; err != nil && err != context.Canceled {
+	if err := f.Follow(ctx); err != nil && err != context.Canceled {
 		t.Fatalf("Follow returned %v after late create, want nil or context.Canceled", err)
 	}
+	if err := <-appendDone; err != nil {
+		t.Fatalf("create+append: %v", err)
+	}
+}
+
+func waitUntil(fn func() bool) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func TestFollower_HandlesAtomicReplace(t *testing.T) {
