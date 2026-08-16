@@ -59,12 +59,19 @@ type Entry struct {
 
 // Writer wraps the underlying file with a mutex for goroutine-safe appends.
 type Writer struct {
-	mu sync.Mutex
-	f  *os.File
+	mu   sync.Mutex
+	f    *os.File
+	path string
+	size int64
+	opts Options
 }
 
 // Open opens, creating if needed, the append-only log file at path.
 func Open(path string) (*Writer, error) {
+	return OpenWithOptions(path, Options{})
+}
+
+func openWriter(path string) (*Writer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("decisionlog: mkdir: %w", err)
 	}
@@ -72,7 +79,7 @@ func Open(path string) (*Writer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decisionlog: open: %w", err)
 	}
-	return &Writer{f: f}, nil
+	return &Writer{f: f, path: path}, nil
 }
 
 // Write appends one entry as one mutex-guarded write.
@@ -86,7 +93,15 @@ func (w *Writer) Write(e Entry) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if _, err := w.f.Write(append(b, '\n')); err != nil {
+	b = append(b, '\n')
+	if w.opts.MaxBytes > 0 && w.size > 0 && w.size+int64(len(b)) > w.opts.MaxBytes {
+		if err := w.rotateLocked(); err != nil {
+			return err
+		}
+	}
+	n, err := w.f.Write(b)
+	w.size += int64(n)
+	if err != nil {
 		return fmt.Errorf("decisionlog: write: %w", err)
 	}
 	return nil
