@@ -69,6 +69,9 @@ An identity anchored only by `exe_basename`, with no `team_id` and no
 `bundle_id`, cannot carry `confidence = "high"`. Renaming a binary to match a
 basename costs an attacker nothing. Forging a Developer ID or Team ID signature
 does not. The loader rejects a name-only entry claiming `high` at parse time.
+Confidence is descriptive provenance, not a decision gate: `medium` and `high`
+catalog hits are both acted on silently by the daemon. The trust boundary is the
+signed catalog artifact plus the entry's explicit destination list.
 
 ## Match Rules
 

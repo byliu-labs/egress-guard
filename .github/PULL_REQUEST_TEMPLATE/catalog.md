@@ -19,7 +19,9 @@ For each new `[[entry]]`, state what you verified and how:
 
 ### Self-Check
 
-- [ ] `confidence` is honest; `high` requires a signature anchor.
+- [ ] `confidence` is honest; `high` requires a signature anchor. Confidence is
+      provenance only; daemon decisions do not change between `medium` and
+      `high`.
 - [ ] `schema_version = 1`.
 - [ ] `go test ./internal/catalogbuild/... -v` passes locally.
 - [ ] No secrets, keys, or internal-only content added.
