@@ -209,6 +209,7 @@ func Status(args []string) error {
 	default:
 		fmt.Println("kernel rules: NOT installed (run `sudo egress-guard install`)")
 	}
+	printLogFootprint(os.Stdout)
 	return printPlatformStatus(os.Stdout)
 }
 
