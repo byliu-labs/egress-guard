@@ -31,7 +31,7 @@ func writeCatalogFile(t *testing.T, path string, entries ...catalog.Entry) {
 func allowEntry(layer, exe, host string) catalog.Entry {
 	return catalog.Entry{
 		SchemaVersion:        catalog.CurrentSchemaVersion,
-		Identity:             catalog.Identity{ExeBasename: exe},
+		Identity:             catalog.Identity{ExeBasename: exe, TeamID: "TESTTEAM"},
 		ExpectedDestinations: []catalog.Destination{{Host: host, Why: "test allow"}},
 		Explanation:          "test allow entry",
 		Evidence:             "test evidence",
@@ -43,7 +43,7 @@ func allowEntry(layer, exe, host string) catalog.Entry {
 func neverEntry(layer, exe, host string) catalog.Entry {
 	return catalog.Entry{
 		SchemaVersion: catalog.CurrentSchemaVersion,
-		Identity:      catalog.Identity{ExeBasename: exe},
+		Identity:      catalog.Identity{ExeBasename: exe, TeamID: "TESTTEAM"},
 		Never:         []string{host},
 		Explanation:   "test deny entry",
 		Evidence:      "test evidence",
@@ -62,7 +62,7 @@ func TestLoadLayeredCatalog_BaselineAllowIsConsulted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadLayeredCatalog: %v", err)
 	}
-	got := live.Lookup(catalog.Identity{ExeBasename: "updater"}, "updates.example.com")
+	got := live.Lookup(catalog.Identity{ExeBasename: "updater", TeamID: "TESTTEAM"}, "updates.example.com")
 	if !got.Found || got.NeverHit {
 		t.Fatalf("baseline allow not consulted: Found=%v NeverHit=%v", got.Found, got.NeverHit)
 	}
@@ -80,7 +80,7 @@ func TestLoadLayeredCatalog_DenyInAnyLayerWinsOverBaselineAllow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadLayeredCatalog: %v", err)
 	}
-	got := live.Lookup(catalog.Identity{ExeBasename: "updater"}, "updates.example.com")
+	got := live.Lookup(catalog.Identity{ExeBasename: "updater", TeamID: "TESTTEAM"}, "updates.example.com")
 	if !got.NeverHit {
 		t.Fatalf("deny must win over a baseline allow: Found=%v NeverHit=%v", got.Found, got.NeverHit)
 	}
@@ -101,7 +101,7 @@ func TestLoadLayeredCatalog_DenyInBaselineWinsOverUserAllow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadLayeredCatalog: %v", err)
 	}
-	got := live.Lookup(catalog.Identity{ExeBasename: "updater"}, "updates.example.com")
+	got := live.Lookup(catalog.Identity{ExeBasename: "updater", TeamID: "TESTTEAM"}, "updates.example.com")
 	if !got.NeverHit {
 		t.Fatalf("deny in baseline must win over a user allow: Found=%v NeverHit=%v", got.Found, got.NeverHit)
 	}
@@ -117,11 +117,11 @@ func TestLoadLayeredCatalog_MissingBaselineIsEmptyLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadLayeredCatalog with absent baseline must not error: %v", err)
 	}
-	if got := live.Lookup(catalog.Identity{ExeBasename: "curl"}, "api.example.com"); !got.Found {
+	if got := live.Lookup(catalog.Identity{ExeBasename: "curl", TeamID: "TESTTEAM"}, "api.example.com"); !got.Found {
 		t.Fatal("user allow should be consulted when baseline is absent")
 	}
 	// A host only a baseline would have provided must not be found.
-	if got := live.Lookup(catalog.Identity{ExeBasename: "updater"}, "updates.example.com"); got.Found {
+	if got := live.Lookup(catalog.Identity{ExeBasename: "updater", TeamID: "TESTTEAM"}, "updates.example.com"); got.Found {
 		t.Fatal("no baseline installed, yet a baseline-only host matched")
 	}
 }

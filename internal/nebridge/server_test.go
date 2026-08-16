@@ -140,8 +140,8 @@ func TestServer_IdleRequestDeadlineLogsDeny(t *testing.T) {
 	if entry.Decision != decisionlog.DecisionDeny {
 		t.Fatalf("logged decision = %q, want deny", entry.Decision)
 	}
-	if !strings.Contains(entry.Reason, "i/o timeout") {
-		t.Fatalf("Reason = %q, want timeout", entry.Reason)
+	if !strings.HasPrefix(entry.Reason, "idle_request_timeout:") {
+		t.Fatalf("Reason = %q, want idle_request_timeout prefix", entry.Reason)
 	}
 }
 

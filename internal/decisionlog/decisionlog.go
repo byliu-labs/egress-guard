@@ -1,5 +1,5 @@
 // Package decisionlog records every egress decision the daemon adjudicates
-// — allow, deny, observe, or ask — as one JSON object per line.
+// — allow, deny, or observe — as one JSON object per line.
 package decisionlog
 
 import (
@@ -20,7 +20,6 @@ const (
 	DecisionAllow   Decision = "allow"
 	DecisionDeny    Decision = "deny"
 	DecisionObserve Decision = "observe"
-	DecisionAsk     Decision = "ask"
 )
 
 // TrustTier records how a Decision was reached.
@@ -51,6 +50,7 @@ type Entry struct {
 	Host      string    `json:"host,omitempty"`
 	DestIP    string    `json:"dest_ip,omitempty"`
 	DestPort  int       `json:"dest_port,omitempty"`
+	ExeSHA256 string    `json:"exe_sha256,omitempty"`
 	TeamID    string    `json:"team_id,omitempty"`
 	SigValid  bool      `json:"sig_valid,omitempty"`
 	// Persistence is best-effort enrichment from the daemon write path.

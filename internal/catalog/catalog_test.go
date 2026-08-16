@@ -351,7 +351,7 @@ func TestCatalog_HasHost(t *testing.T) {
 	}
 }
 
-func TestCatalog_Lookup_ExeBasenameFallback(t *testing.T) {
+func TestCatalog_Lookup_NameOnlyEntryIsDecisionInert(t *testing.T) {
 	toml := `
 [[entry]]
 schema_version = 1
@@ -371,8 +371,36 @@ host = "api.mytool.example"
 		t.Fatalf("Load: %v", err)
 	}
 	res := c.Lookup(Identity{ExeBasename: "mytool"}, "api.mytool.example")
-	if !res.Found {
-		t.Errorf("exe_basename fallback match failed: %+v", res)
+	if res.Found {
+		t.Errorf("name-only identity must not produce a catalog allow: %+v", res)
+	}
+}
+
+func TestCatalog_Lookup_ExeSHA256PinsIdentity(t *testing.T) {
+	toml := `
+[[entry]]
+schema_version = 1
+layer = "baseline"
+confidence = "medium"
+evidence = "operator pinned this exact tool binary by sha256"
+explanation = "mytool phones home to its own API"
+
+[entry.identity]
+exe_basename = "mytool"
+exe_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[entry.expected_destinations]]
+host = "api.mytool.example"
+`
+	c, err := Load([]byte(toml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "api.mytool.example"); got.Found {
+		t.Fatalf("wrong binary hash matched catalog entry: %+v", got)
+	}
+	if got := c.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, "api.mytool.example"); !got.Found {
+		t.Fatalf("matching binary hash did not match catalog entry: %+v", got)
 	}
 }
 

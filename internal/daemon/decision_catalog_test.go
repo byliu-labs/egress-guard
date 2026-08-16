@@ -1,6 +1,10 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
@@ -93,7 +97,7 @@ func TestDecideBranch_CatalogFoundAllowsWithoutPrompt(t *testing.T) {
 	}
 }
 
-func TestDecideBranch_MediumBaselineCatalogFoundAllowsWithoutPromptConfigured(t *testing.T) {
+func TestDecideBranch_NameOnlyBaselineDoesNotAllowWithoutPrompt(t *testing.T) {
 	cat := &catalog.Catalog{}
 	pi := procid.ProcInfo{PID: 13, Exe: "/tmp/git", Comm: "git"}
 	sig := signature.SignedIdentity{}
@@ -111,14 +115,49 @@ func TestDecideBranch_MediumBaselineCatalogFoundAllowsWithoutPromptConfigured(t 
 
 	d := newDaemonForBranchWithCatalog(t, nil, cat)
 	outcome, entry := d.decideBranch("github.com", nil, pi, sig)
+	if outcome != outcomeDeny {
+		t.Errorf("outcome = %v, want deny", outcome)
+	}
+	if entry.Reason != "host_unknown_no_prompt" {
+		t.Errorf("entry.Reason = %q, want host_unknown_no_prompt", entry.Reason)
+	}
+	if entry.TrustTier != decisionlog.TierDefault {
+		t.Errorf("entry.TrustTier = %q, want default", entry.TrustTier)
+	}
+}
+
+func TestDecideBranch_ExeSHA256BaselineAllowsMatchingBinary(t *testing.T) {
+	cat := &catalog.Catalog{}
+	dir := t.TempDir()
+	exePath := filepath.Join(dir, "git")
+	exeBytes := []byte("real git fixture")
+	if err := os.WriteFile(exePath, exeBytes, 0o755); err != nil {
+		t.Fatalf("write executable fixture: %v", err)
+	}
+	sum := sha256.Sum256(exeBytes)
+	pi := procid.ProcInfo{PID: 14, Exe: exePath, Comm: "git"}
+	if err := cat.Add(catalog.Entry{
+		SchemaVersion:        catalog.CurrentSchemaVersion,
+		Identity:             catalog.Identity{ExeBasename: "git", ExeSHA256: hex.EncodeToString(sum[:])},
+		ExpectedDestinations: []catalog.Destination{{Host: "github.com", Why: "test fixture"}},
+		Explanation:          "this pinned git binary talks to GitHub",
+		Evidence:             "test fixture sha256",
+		Confidence:           catalog.ConfidenceMedium,
+		Layer:                "baseline",
+	}); err != nil {
+		t.Fatalf("cat.Add: %v", err)
+	}
+
+	d := newDaemonForBranchWithCatalog(t, nil, cat)
+	outcome, entry := d.decideBranch("github.com", nil, pi, signature.SignedIdentity{})
 	if outcome != outcomeAllow {
 		t.Errorf("outcome = %v, want allow", outcome)
 	}
 	if entry.Reason != "catalog_fact" {
 		t.Errorf("entry.Reason = %q, want catalog_fact", entry.Reason)
 	}
-	if entry.TrustTier != decisionlog.TierCatalogFact {
-		t.Errorf("entry.TrustTier = %q, want catalog fact", entry.TrustTier)
+	if entry.ExeSHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("entry.ExeSHA256 = %q, want fixture hash", entry.ExeSHA256)
 	}
 }
 

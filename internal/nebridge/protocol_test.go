@@ -58,24 +58,10 @@ func TestResponse_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestResponse_AskVerdictRoundTrip(t *testing.T) {
-	response := Response{
-		Verdict: VerdictAsk,
-		Host:    "unknown.example",
-		Reason:  "prompt_required",
-	}
-
-	var encoded bytes.Buffer
-	if err := EncodeResponse(&encoded, response); err != nil {
-		t.Fatalf("EncodeResponse returned error: %v", err)
-	}
-
-	got, err := DecodeResponse(&encoded)
-	if err != nil {
-		t.Fatalf("DecodeResponse returned error: %v", err)
-	}
-	if !reflect.DeepEqual(got, response) {
-		t.Fatalf("response round trip = %#v, want %#v", got, response)
+func TestResponse_RejectsUnsupportedAskVerdict(t *testing.T) {
+	err := EncodeResponse(&bytes.Buffer{}, Response{Verdict: Verdict(2)})
+	if err == nil {
+		t.Fatal("EncodeResponse accepted unsupported ask verdict")
 	}
 }
 

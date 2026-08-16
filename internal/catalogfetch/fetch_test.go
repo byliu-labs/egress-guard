@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -119,5 +120,36 @@ func TestHTTPFetcher_RejectsPlainRemoteHTTP(t *testing.T) {
 	_, err := (HTTPFetcher{}).Fetch(context.Background(), "http://example.com/catalog.toml")
 	if err == nil {
 		t.Fatal("expected plain remote HTTP to be rejected before download")
+	}
+}
+
+func TestHTTPFetcher_RejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, MaxCatalogBytes+1))
+	}))
+	defer srv.Close()
+
+	_, err := (HTTPFetcher{Client: srv.Client()}).Fetch(context.Background(), srv.URL+"/catalog.toml")
+	if err == nil {
+		t.Fatal("oversized body accepted")
+	}
+}
+
+func TestHTTPFetcher_RejectsCrossHostRedirect(t *testing.T) {
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(validBaselineTOML))
+	}))
+	defer final.Close()
+	hop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL+"/catalog.toml", http.StatusFound)
+	}))
+	defer hop.Close()
+
+	_, err := (HTTPFetcher{Client: hop.Client()}).Fetch(context.Background(), hop.URL+"/catalog.toml")
+	if err == nil {
+		t.Fatal("cross-host redirect followed")
+	}
+	if !strings.Contains(err.Error(), "cross-host") {
+		t.Fatalf("error %q does not name cross-host redirect", err)
 	}
 }

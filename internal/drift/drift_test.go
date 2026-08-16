@@ -34,8 +34,8 @@ func TestIdentityFromEntry(t *testing.T) {
 	}{
 		{
 			name: "uses basename of full exe path",
-			e:    decisionlog.Entry{Exe: "/Applications/Slack.app/Contents/MacOS/Slack", TeamID: "TEAMSLACK"},
-			want: catalog.Identity{ExeBasename: "Slack", TeamID: "TEAMSLACK"},
+			e:    decisionlog.Entry{Exe: "/Applications/Slack.app/Contents/MacOS/Slack", ExeSHA256: "abc123", TeamID: "TEAMSLACK"},
+			want: catalog.Identity{ExeBasename: "Slack", ExeSHA256: "abc123", TeamID: "TEAMSLACK"},
 		},
 		{
 			name: "falls back to Comm when Exe is empty",

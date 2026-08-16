@@ -56,31 +56,35 @@ why  = "Chrome component and extension updates"
 | `evidence` | yes | A sentence describing why this is trusted: a signature you verified, vendor documentation, or a published Team ID list. "It seemed to work" is not evidence. |
 | `explanation` | yes | The plain-English sentence a drift prompt shows the user. Write it for someone who has never heard of this process. |
 | `never` | no | Hostnames this identity should never reach. This turns the entry into an anomaly detector for a legitimate identity contacting an illegitimate destination. |
-| `entry.identity.bundle_id` | conditional | At least one of `bundle_id` or `exe_basename` is required. `bundle_id`, when present, is the strongest identity match key. |
-| `entry.identity.team_id` | no | Narrows either a `bundle_id` or `exe_basename` match to a specific signing team. |
-| `entry.identity.exe_basename` | conditional | At least one of `bundle_id` or `exe_basename` is required. A basename is easy to spoof, so see the confidence rule below. |
+| `entry.identity.exe_sha256` | no | SHA-256 of the executable bytes. When present, the runtime binary hash must match exactly. |
+| `entry.identity.bundle_id` | no | Bundle identifier. When present, the runtime bundle ID must match exactly. |
+| `entry.identity.team_id` | no | Signing team identifier. When present, the runtime signing team must match exactly. |
+| `entry.identity.exe_basename` | conditional | At least one identity field is required. Basenames are narrowing labels only; by themselves they are decision-inert. |
 | `entry.identity.signed_required` | no | Hint that this identity should only ever appear signed; reserved for future enforcement. |
 | `entry.expected_destinations[].host` | no | Hostnames this identity legitimately contacts. `Lookup` only reports a found expected destination when the queried host is explicitly listed. |
 | `entry.expected_destinations[].why` | no | One-line reason for the destination. |
 
 ## Confidence Floor
 
-An identity anchored only by `exe_basename`, with no `team_id` and no
-`bundle_id`, cannot carry `confidence = "high"`. Renaming a binary to match a
-basename costs an attacker nothing. Forging a Developer ID or Team ID signature
-does not. The loader rejects a name-only entry claiming `high` at parse time.
-Confidence is descriptive provenance, not a decision gate: `medium` and `high`
-catalog hits are both acted on silently by the daemon. The trust boundary is the
-signed catalog artifact plus the entry's explicit destination list.
+An identity anchored only by `exe_basename`, with no `exe_sha256`, `team_id`,
+or `bundle_id`, cannot produce a daemon allow. Renaming a binary to match a
+basename costs an attacker nothing. Forging a binary hash, Developer ID, or
+bundle ID match does not.
+
+The loader still accepts name-only `medium` entries so review tools can carry
+human notes, but `Lookup` treats them as documentation, not catalog facts.
+Confidence is descriptive provenance, not a decision gate. The daemon's trust
+boundary is a signed catalog artifact plus an explicit destination list plus an
+identity pin.
 
 ## Match Rules
 
-Lookup uses the same precedence as the exemption catalog:
+Lookup uses conjunctive identity pins:
 
-1. If the entry sets `bundle_id`, it must match the query `bundle_id`.
-2. If the entry also sets `team_id`, that must match too.
-3. If the entry does not set `bundle_id`, `exe_basename` is used as fallback.
-4. If the fallback entry also sets `team_id`, that must match too.
+1. If the entry sets none of `exe_sha256`, `team_id`, or `bundle_id`, it is not
+   a decision fact.
+2. Every pin set by the entry must match the runtime identity.
+3. If the entry also sets `exe_basename`, that basename must match too.
 
 Host matching is exact after lowercasing and trimming one trailing dot. Version
 1 has no wildcard or suffix matching.

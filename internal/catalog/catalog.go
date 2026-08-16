@@ -28,6 +28,7 @@ var validLayers = map[string]bool{"baseline": true, "pro": true, "user": true}
 // Identity is the trust anchor for a catalog entry.
 type Identity struct {
 	ExeBasename    string `toml:"exe_basename,omitempty"`
+	ExeSHA256      string `toml:"exe_sha256,omitempty" json:"-"`
 	TeamID         string `toml:"team_id,omitempty"`
 	BundleID       string `toml:"bundle_id,omitempty"`
 	SignedRequired bool   `toml:"signed_required,omitempty"`
@@ -136,9 +137,9 @@ func (c *Catalog) Merge(other *Catalog) {
 	c.entries = append(c.entries, entries...)
 }
 
-// Lookup matches id by BundleID first, then ExeBasename fallback, each with
-// optional TeamID narrowing. Found means the host is explicitly expected or
-// explicitly listed as never for the matched identity.
+// Lookup matches id against pinned identity facts. Name-only entries can be
+// loaded as documentation, but they are decision-inert: a catalog allow needs
+// exe_sha256, team_id, or bundle_id, optionally narrowed by exe_basename.
 func (c *Catalog) Lookup(id Identity, host string) MatchResult {
 	nh := normalizeHost(host)
 	var expected MatchResult
@@ -217,22 +218,26 @@ func (c *Catalog) Marshal() ([]byte, error) {
 }
 
 func identityMatches(entryID, queryID Identity) bool {
-	if entryID.BundleID != "" {
-		if entryID.BundleID != queryID.BundleID {
-			return false
-		}
-		if entryID.TeamID != "" && entryID.TeamID != queryID.TeamID {
-			return false
-		}
-		return true
+	if !hasDecisionPin(entryID) {
+		return false
 	}
-	if entryID.ExeBasename != "" && entryID.ExeBasename == queryID.ExeBasename {
-		if entryID.TeamID != "" && entryID.TeamID != queryID.TeamID {
-			return false
-		}
-		return true
+	if entryID.ExeSHA256 != "" && !strings.EqualFold(entryID.ExeSHA256, queryID.ExeSHA256) {
+		return false
 	}
-	return false
+	if entryID.BundleID != "" && entryID.BundleID != queryID.BundleID {
+		return false
+	}
+	if entryID.TeamID != "" && entryID.TeamID != queryID.TeamID {
+		return false
+	}
+	if entryID.ExeBasename != "" && entryID.ExeBasename != queryID.ExeBasename {
+		return false
+	}
+	return true
+}
+
+func hasDecisionPin(id Identity) bool {
+	return id.ExeSHA256 != "" || id.TeamID != "" || id.BundleID != ""
 }
 
 func normalizeHost(h string) string {
@@ -240,8 +245,8 @@ func normalizeHost(h string) string {
 }
 
 func validateEntry(e Entry) error {
-	if e.Identity.BundleID == "" && e.Identity.ExeBasename == "" {
-		return fmt.Errorf("empty identity: at least one of bundle_id or exe_basename required")
+	if e.Identity.ExeSHA256 == "" && e.Identity.BundleID == "" && e.Identity.TeamID == "" && e.Identity.ExeBasename == "" {
+		return fmt.Errorf("empty identity: at least one identity field required")
 	}
 	if e.Evidence == "" {
 		return fmt.Errorf("missing evidence: a catalog fact requires evidence")

@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -60,6 +63,7 @@ func entryForWithoutPersistence(decision decisionlog.Decision, reason, host stri
 		Argv:      pi.Argv,
 		Cwd:       pi.Cwd,
 		PName:     pi.PComm,
+		ExeSHA256: exeSHA256(pi.Exe),
 		TeamID:    sig.TeamID,
 		SigValid:  sig.Valid,
 	}
@@ -170,7 +174,23 @@ func identityFor(pi procid.ProcInfo, sig signature.SignedIdentity) catalog.Ident
 	if base == "" || base == "." {
 		base = pi.Comm
 	}
-	return catalog.Identity{ExeBasename: base, TeamID: sig.TeamID, BundleID: sig.BundleID}
+	return catalog.Identity{ExeBasename: base, ExeSHA256: exeSHA256(pi.Exe), TeamID: sig.TeamID, BundleID: sig.BundleID}
+}
+
+func exeSHA256(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) drift.Event {

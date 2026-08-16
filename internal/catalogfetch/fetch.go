@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
 	"github.com/byliu-labs/egress-guard/internal/catalogsig"
@@ -27,14 +28,13 @@ type HTTPFetcher struct {
 	Client *http.Client
 }
 
+const MaxCatalogBytes = 8 << 20
+
 func (h HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
 	if err := requireSafeCatalogURL(url); err != nil {
 		return nil, err
 	}
-	c := h.Client
-	if c == nil {
-		c = http.DefaultClient
-	}
+	c := secureClient(h.Client)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -47,7 +47,14 @@ func (h HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("http %d fetching %s", resp.StatusCode, url)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxCatalogBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxCatalogBytes {
+		return nil, fmt.Errorf("catalogfetch: %s exceeds %d bytes", url, MaxCatalogBytes)
+	}
+	return data, nil
 }
 
 // FetchVerified downloads url and its detached signature at sigURL, verifies
@@ -108,4 +115,28 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func secureClient(base *http.Client) *http.Client {
+	var c http.Client
+	if base != nil {
+		c = *base
+	}
+	if c.Timeout == 0 {
+		c.Timeout = 30 * time.Second
+	}
+	previous := c.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := requireSafeCatalogURL(req.URL.String()); err != nil {
+			return fmt.Errorf("catalogfetch: refusing redirect: %w", err)
+		}
+		if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+			return fmt.Errorf("catalogfetch: refusing cross-host redirect to %s", req.URL.Host)
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		return nil
+	}
+	return &c
 }

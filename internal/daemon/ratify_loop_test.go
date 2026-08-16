@@ -76,7 +76,7 @@ func TestRatifyLoop_AllowAlways_SecondConnectionIsSilent(t *testing.T) {
 	}
 }
 
-func TestRatifyLoop_UnsignedAllowAlways_SecondConnectionIsSilent(t *testing.T) {
+func TestRatifyLoop_UnsignedAllowAlways_SecondConnectionStillPrompts(t *testing.T) {
 	cat := &catalog.Catalog{}
 	path := filepath.Join(t.TempDir(), "catalog-user.toml")
 	notifier := &countingNotifier{a: prompt.ActionAllowAlways}
@@ -95,11 +95,11 @@ func TestRatifyLoop_UnsignedAllowAlways_SecondConnectionIsSilent(t *testing.T) {
 	}
 
 	outcome2, entry2 := d.decideBranch("api.localtool.example", nil, pi, sig)
-	if outcome2 != outcomeAllow || entry2.Reason != "catalog_fact" {
-		t.Fatalf("second connection: outcome=%v entry=%+v, want allow/catalog_fact", outcome2, entry2)
+	if outcome2 != outcomeAllow || entry2.Reason != "user_allowed" {
+		t.Fatalf("second connection: outcome=%v entry=%+v, want allow/user_allowed", outcome2, entry2)
 	}
-	if notifier.calls != 1 {
-		t.Errorf("Notify calls = %d, want 1", notifier.calls)
+	if notifier.calls != 2 {
+		t.Errorf("Notify calls = %d, want 2", notifier.calls)
 	}
 }
 
