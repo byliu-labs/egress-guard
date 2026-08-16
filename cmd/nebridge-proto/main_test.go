@@ -203,11 +203,25 @@ func TestProductionIdentityResolverCachesSignatures(t *testing.T) {
 	}
 }
 
+func TestDefaultBuild_HasNoStubIdentityFlag(t *testing.T) {
+	out, err := exec.Command("go", "build", "-o", filepath.Join(t.TempDir(), "nb"), ".").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "test-stub-identity") {
+		t.Fatal("main.go still registers -test-stub-identity in the default build; gate it behind //go:build nebridge_testing")
+	}
+}
+
 func buildProto(t *testing.T, tempDir string) string {
 	t.Helper()
 
 	binary := filepath.Join(tempDir, "nebridge-proto")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	build := exec.Command("go", "build", "-tags", "nebridge_testing", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build nebridge-proto: %v\n%s", err, output)
 	}
