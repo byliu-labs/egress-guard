@@ -12,4 +12,8 @@ func uninstallLaunchDaemon() error {
 	return errors.New("egress-guard daemon is macOS-only; see issue #11 for Linux via OpenSnitch")
 }
 
+func systemBaselineCatalogPath() (string, error) {
+	return "", errors.New("catalog fetch --system is macOS-only")
+}
+
 var launchDaemonInstalled = func() bool { return false }

@@ -3,11 +3,14 @@
 package main
 
 import (
-	"crypto/ed25519"
+	"bytes"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/byliu-labs/egress-guard/internal/catalog"
 	"github.com/byliu-labs/egress-guard/internal/catalogbuild"
 	"github.com/byliu-labs/egress-guard/internal/catalogsig"
 )
@@ -21,15 +24,15 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: catalog-build build|refresh|embed-exempt|keygen|sign [flags]")
+		return fmt.Errorf("usage: catalog-build build|refresh|embed-exempt|genkey|sign [flags]")
 	}
 	switch args[0] {
 	case "build", "refresh":
 		return cmdBuild(args[1:])
 	case "embed-exempt":
 		return cmdEmbedExempt(args[1:])
-	case "keygen":
-		return cmdKeygen(args[1:])
+	case "genkey":
+		return cmdGenKey(args[1:])
 	case "sign":
 		return cmdSign(args[1:])
 	default:
@@ -48,7 +51,7 @@ func cmdBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	b, err := catalogbuild.CompileBaseline(c)
+	b, err := compileBaselineForOutput(c, *out)
 	if err != nil {
 		return err
 	}
@@ -59,15 +62,31 @@ func cmdBuild(args []string) error {
 	return nil
 }
 
-func cmdKeygen(args []string) error {
-	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
-	pubOut := fs.String("pub-out", "catalog-baseline.pub", "public key output path")
-	privOut := fs.String("priv-out", "", "private key output path")
+func compileBaselineForOutput(c *catalog.Catalog, out string) ([]byte, error) {
+	existingBytes, readErr := os.ReadFile(out)
+	if readErr == nil {
+		existing, err := catalog.Load(existingBytes)
+		if err == nil && existing.IssuedAt() != "" {
+			c.SetIssuedAt(existing.IssuedAt())
+			candidate, err := c.Marshal()
+			if err == nil && bytes.Equal(candidate, existingBytes) {
+				return candidate, nil
+			}
+			c.SetIssuedAt("")
+		}
+	}
+	b, err := catalogbuild.CompileBaseline(c)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func cmdGenKey(args []string) error {
+	fs := flag.NewFlagSet("genkey", flag.ContinueOnError)
+	pubOut := fs.String("pub-out", "internal/catalogfetch/maintainer.pub", "public key output path")
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-	if *privOut == "" {
-		return fmt.Errorf("keygen requires --priv-out; keep this file secret and out of git")
 	}
 	pub, priv, err := catalogsig.GenerateKey()
 	if err != nil {
@@ -76,48 +95,59 @@ func cmdKeygen(args []string) error {
 	if err := writeNewFile(*pubOut, pub, 0o644); err != nil {
 		return err
 	}
-	if err := writeNewFile(*privOut, priv, 0o600); err != nil {
-		return err
-	}
-	fmt.Printf("wrote %s and %s\n", *pubOut, *privOut)
+	fmt.Printf("wrote %s (commit this)\n", *pubOut)
+	fmt.Println("Store this private key in CATALOG_SIGNING_KEY; it is printed once:")
+	fmt.Println(base64.StdEncoding.EncodeToString(priv))
 	return nil
 }
 
 func cmdSign(args []string) error {
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
-	catalogPath := fs.String("catalog", "catalog-baseline.toml", "compiled catalog path")
-	privPath := fs.String("private-key", "", "Ed25519 private key path")
-	sigOut := fs.String("sig-out", "catalog-baseline.toml.sig", "signature output path")
-	pubOut := fs.String("pub-out", "", "optional public key output path derived from the private key")
+	in := fs.String("in", "catalog-baseline.toml", "artifact to sign")
+	key := fs.String("key", "", "file holding the base64 Ed25519 private key")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *privPath == "" {
-		return fmt.Errorf("sign requires --private-key")
-	}
-	data, err := os.ReadFile(*catalogPath)
+	priv, err := signingKey(*key)
 	if err != nil {
-		return fmt.Errorf("read catalog %s: %w", *catalogPath, err)
+		return err
 	}
-	priv, err := os.ReadFile(*privPath)
+	data, err := os.ReadFile(*in)
 	if err != nil {
-		return fmt.Errorf("read private key %s: %w", *privPath, err)
+		return fmt.Errorf("read %s: %w", *in, err)
 	}
 	sig, err := catalogsig.Sign(data, priv)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*sigOut, sig, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", *sigOut, err)
+	out := *in + ".sig"
+	if err := os.WriteFile(out, sig, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", out, err)
 	}
-	if *pubOut != "" {
-		pub := ed25519.PrivateKey(priv).Public().(ed25519.PublicKey)
-		if err := os.WriteFile(*pubOut, pub, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", *pubOut, err)
-		}
-	}
-	fmt.Printf("wrote %s (%d bytes)\n", *sigOut, len(sig))
+	fmt.Printf("wrote %s (%d bytes)\n", out, len(sig))
 	return nil
+}
+
+func signingKey(path string) ([]byte, error) {
+	var encoded string
+	if path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read signing key %s: %w", path, err)
+		}
+		encoded = string(raw)
+	} else {
+		encoded = os.Getenv("CATALOG_SIGNING_KEY")
+	}
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, fmt.Errorf("no signing key: pass --key <file> or set CATALOG_SIGNING_KEY")
+	}
+	priv, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("signing key is not valid base64: %w", err)
+	}
+	return priv, nil
 }
 
 func writeNewFile(path string, b []byte, perm os.FileMode) error {

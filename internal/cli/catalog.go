@@ -14,6 +14,7 @@ import (
 const DefaultCatalogURL = "https://raw.githubusercontent.com/byliu-labs/egress-guard/master/catalog-baseline.toml"
 
 var catalogFetcher catalogfetch.Fetcher = catalogfetch.HTTPFetcher{}
+var catalogSystemBaselinePath = systemBaselineCatalogPath
 
 // Catalog implements `egress-guard catalog fetch`: download, verify, validate,
 // and install the baseline catalog at baselineCatalogPath().
@@ -24,12 +25,22 @@ func Catalog(args []string) error {
 	fs := flag.NewFlagSet("fetch", flag.ContinueOnError)
 	url := fs.String("url", DefaultCatalogURL, "catalog URL")
 	pubPath := fs.String("pubkey", "", "Ed25519 public key file; overrides the pinned maintainer key for self-hosted catalogs")
+	system := fs.Bool("system", false, "install into the boot-resident daemon baseline catalog")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	dest, err := baselineCatalogPath()
 	if err != nil {
 		return err
+	}
+	if *system {
+		if getEuid() != 0 {
+			return fmt.Errorf("catalog fetch --system requires root: re-run with sudo")
+		}
+		dest, err = catalogSystemBaselinePath()
+		if err != nil {
+			return err
+		}
 	}
 	pub, err := catalogfetch.MaintainerKey()
 	if err != nil {
@@ -44,7 +55,8 @@ func Catalog(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := catalogfetch.FetchVerified(ctx, *url, *url+".sig", dest, catalogFetcher, pub); err != nil {
-		return fmt.Errorf("%w\n\nThe baseline catalog must be signed by the maintainer. If you are self-hosting a catalog, pass --pubkey <your key file>.", err)
+		return fmt.Errorf("%w\n\nThe baseline catalog must be signed by the maintainer. "+
+			"If you are self-hosting a catalog, pass --pubkey <your key file>.", err)
 	}
 	fmt.Printf("installed baseline catalog: %s\n", dest)
 	return nil
