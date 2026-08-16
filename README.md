@@ -157,6 +157,7 @@ sudo egress-guard uninstall     # removes the pf anchor
 | `egress-guard allow <host>` | Adds a host to the user allowlist. Repeatable. |
 | `egress-guard deny <host>` | Adds a host to the user denylist. Repeatable. |
 | `egress-guard tail` | Follows the JSONL block log live. |
+| `egress-guard catalog fetch --pubkey <path>` | Fetches and installs a signed public baseline catalog. Unsigned remote catalogs are refused. |
 | `egress-guard version` | Prints the version string. |
 
 Hostname patterns support three forms:

@@ -74,7 +74,7 @@ Commands (v0.1):
   tail          Follow the block log
   exempt-app    Manage user-added exempt apps (add/remove/list)
   telemetry     Manage opt-in telemetry (enable/disable/status)
-  catalog       Fetch and install the public baseline catalog
+  catalog       Fetch and install a signed public baseline catalog
   version       Print version
 `)
 }

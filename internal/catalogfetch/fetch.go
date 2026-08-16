@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -26,6 +28,9 @@ type HTTPFetcher struct {
 }
 
 func (h HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	if err := requireSafeCatalogURL(url); err != nil {
+		return nil, err
+	}
 	c := h.Client
 	if c == nil {
 		c = http.DefaultClient
@@ -43,16 +48,6 @@ func (h HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("http %d fetching %s", resp.StatusCode, url)
 	}
 	return io.ReadAll(resp.Body)
-}
-
-// Fetch downloads url, validates it through catalog.Load, then atomically
-// installs it at destPath. Invalid data leaves any existing catalog untouched.
-func Fetch(ctx context.Context, url, destPath string, f Fetcher) error {
-	data, err := f.Fetch(ctx, url)
-	if err != nil {
-		return fmt.Errorf("catalogfetch: download %s: %w", url, err)
-	}
-	return installValid(data, destPath)
 }
 
 // FetchVerified downloads url and its detached signature at sigURL, verifies
@@ -73,8 +68,12 @@ func FetchVerified(ctx context.Context, url, sigURL, destPath string, f Fetcher,
 }
 
 func installValid(data []byte, destPath string) error {
-	if _, err := catalog.Load(data); err != nil {
+	c, err := catalog.Load(data)
+	if err != nil {
 		return fmt.Errorf("catalogfetch: refusing to install invalid catalog: %w", err)
+	}
+	if c.EntryCount() == 0 {
+		return fmt.Errorf("catalogfetch: refusing to install empty catalog")
 	}
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("catalogfetch: mkdir: %w", err)
@@ -87,4 +86,26 @@ func installValid(data []byte, destPath string) error {
 		return fmt.Errorf("catalogfetch: install: %w", err)
 	}
 	return nil
+}
+
+func requireSafeCatalogURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("catalogfetch: parse URL %q: %w", raw, err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("catalogfetch: %s is not allowed for remote catalog fetch; use https", u.Scheme)
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

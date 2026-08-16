@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
@@ -10,6 +11,16 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/prompt"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
+
+type recordingDecider struct {
+	req prompt.Request
+	out prompt.Decision
+}
+
+func (r *recordingDecider) Decide(_ context.Context, req prompt.Request) prompt.Decision {
+	r.req = req
+	return r.out
+}
 
 func newDaemonForBranchWithCatalog(t *testing.T, dec prompt.Decider, cat *catalog.Catalog) *Daemon {
 	t.Helper()
@@ -90,6 +101,39 @@ func TestDecideBranch_CatalogFoundAllowsWithoutPrompt(t *testing.T) {
 	}
 	if entry.TrustTier != decisionlog.TierCatalogFact {
 		t.Errorf("entry.TrustTier = %q, want catalog fact", entry.TrustTier)
+	}
+}
+
+func TestDecideBranch_MediumCatalogMatchPromptsWithCatalogContext(t *testing.T) {
+	cat := &catalog.Catalog{}
+	pi := procid.ProcInfo{PID: 13, Exe: "/tmp/git", Comm: "git"}
+	sig := signature.SignedIdentity{}
+	if err := cat.Add(catalog.Entry{
+		SchemaVersion:        catalog.CurrentSchemaVersion,
+		Identity:             catalog.Identity{ExeBasename: "git"},
+		ExpectedDestinations: []catalog.Destination{{Host: "github.com", Why: "test fixture"}},
+		Explanation:          "git talks to GitHub",
+		Evidence:             "basename-only public catalog fixture",
+		Confidence:           catalog.ConfidenceMedium,
+		Layer:                "baseline",
+	}); err != nil {
+		t.Fatalf("cat.Add: %v", err)
+	}
+
+	dec := &recordingDecider{out: prompt.Deny}
+	d := newDaemonForBranchWithCatalog(t, dec, cat)
+	outcome, entry := d.decideBranch("github.com", nil, pi, sig)
+	if outcome != outcomeDeny {
+		t.Errorf("outcome = %v, want prompt-driven deny", outcome)
+	}
+	if entry.Reason != "user_denied_or_timeout" {
+		t.Errorf("entry.Reason = %q, want prompt path", entry.Reason)
+	}
+	if !dec.req.CatalogMatch.Found {
+		t.Fatal("prompt request lost the medium-confidence catalog context")
+	}
+	if dec.req.CatalogMatch.Entry.Confidence != catalog.ConfidenceMedium {
+		t.Fatalf("prompt catalog confidence = %q, want medium", dec.req.CatalogMatch.Entry.Confidence)
 	}
 }
 

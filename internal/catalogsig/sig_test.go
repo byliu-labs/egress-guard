@@ -6,11 +6,20 @@ import (
 )
 
 func TestVerify_AcceptsGoodSignature(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(nil)
+	pub, priv, _ := GenerateKey()
 	data := []byte("catalog bytes")
-	sig := ed25519.Sign(priv, data)
+	sig, err := Sign(data, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
 	if err := Verify(data, sig, pub); err != nil {
 		t.Fatalf("Verify rejected a valid signature: %v", err)
+	}
+}
+
+func TestSign_RejectsWrongPrivateKeySize(t *testing.T) {
+	if _, err := Sign([]byte("x"), []byte("short")); err == nil {
+		t.Fatal("Sign accepted a malformed private key")
 	}
 }
 

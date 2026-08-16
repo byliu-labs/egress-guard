@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"crypto/ed25519"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/catalogsig"
 )
 
 const cliValidBaselineTOML = `
@@ -26,27 +26,15 @@ exe_basename = "pip"
 host = "pypi.org"
 `
 
-func TestCatalog_FetchInstallsAtBaselinePath(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(cliValidBaselineTOML))
-	}))
-	defer srv.Close()
-
-	cfg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", cfg)
-
-	if err := Catalog([]string{"fetch", "--url", srv.URL}); err != nil {
-		t.Fatalf("Catalog fetch: %v", err)
-	}
-	want := filepath.Join(cfg, "egress-guard", "catalog-baseline.toml")
-	if _, err := catalog.LoadFile(want); err != nil {
-		t.Fatalf("expected an installed catalog at %s: %v", want, err)
-	}
-}
-
 func TestCatalog_FetchWithPubkeyVerifiesSignature(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(nil)
-	sig := ed25519.Sign(priv, []byte(cliValidBaselineTOML))
+	pub, priv, err := catalogsig.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	sig, err := catalogsig.Sign([]byte(cliValidBaselineTOML), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/catalog.toml", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(cliValidBaselineTOML))
@@ -70,6 +58,24 @@ func TestCatalog_FetchWithPubkeyVerifiesSignature(t *testing.T) {
 	want := filepath.Join(cfg, "egress-guard", "catalog-baseline.toml")
 	if _, err := catalog.LoadFile(want); err != nil {
 		t.Fatalf("expected an installed signed catalog at %s: %v", want, err)
+	}
+}
+
+func TestCatalog_FetchRequiresPubkey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(cliValidBaselineTOML))
+	}))
+	defer srv.Close()
+
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+
+	if err := Catalog([]string{"fetch", "--url", srv.URL}); err == nil {
+		t.Fatal("expected unsigned catalog fetch to be refused")
+	}
+	want := filepath.Join(cfg, "egress-guard", "catalog-baseline.toml")
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("unsigned fetch must not install %s", want)
 	}
 }
 

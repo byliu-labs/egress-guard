@@ -12,6 +12,7 @@ import (
 
 const (
 	catalogFactLabel = "[CATALOG FACT -- verified]"
+	catalogHintLabel = "[CATALOG HINT -- advisory, unverified identity]"
 	opinionLabel     = "[MODEL GUESS -- advisory, unverified]"
 )
 
@@ -44,6 +45,9 @@ func RenderPrompt(req Request) string {
 }
 
 func renderCatalogFact(e catalog.Entry) string {
+	if e.Confidence == catalog.ConfidenceMedium {
+		return fmt.Sprintf("%s %s\n", catalogHintLabel, e.Explanation)
+	}
 	return fmt.Sprintf("%s %s\n", catalogFactLabel, e.Explanation)
 }
 
@@ -53,6 +57,7 @@ func renderOpinion(o explain.Explanation) string {
 
 func sanitizeModelText(s string) string {
 	s = strings.ReplaceAll(s, catalogFactLabel, "[catalog fact label removed]")
+	s = strings.ReplaceAll(s, catalogHintLabel, "[catalog hint label removed]")
 	s = strings.ReplaceAll(s, opinionLabel, "[model guess label removed]")
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {

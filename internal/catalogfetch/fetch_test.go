@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/catalogsig"
 )
 
 const validBaselineTOML = `
@@ -26,36 +27,6 @@ exe_basename = "pip"
 [[entry.expected_destinations]]
 host = "pypi.org"
 `
-
-func TestFetch_InstallsValidCatalog(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(validBaselineTOML))
-	}))
-	defer srv.Close()
-
-	dest := filepath.Join(t.TempDir(), "catalog-baseline.toml")
-	if err := Fetch(context.Background(), srv.URL, dest, HTTPFetcher{}); err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	if _, err := catalog.LoadFile(dest); err != nil {
-		t.Fatalf("installed catalog is invalid: %v", err)
-	}
-}
-
-func TestFetch_RejectsInvalidCatalog_NoFileWritten(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("this is not valid catalog toml {{{"))
-	}))
-	defer srv.Close()
-
-	dest := filepath.Join(t.TempDir(), "catalog-baseline.toml")
-	if err := Fetch(context.Background(), srv.URL, dest, HTTPFetcher{}); err == nil {
-		t.Fatal("expected Fetch to reject an invalid catalog")
-	}
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
-		t.Error("no file must be written when the downloaded catalog is invalid")
-	}
-}
 
 func TestFetchVerified_RejectsBadSignature(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(nil)
@@ -80,8 +51,14 @@ func TestFetchVerified_RejectsBadSignature(t *testing.T) {
 }
 
 func TestFetchVerified_InstallsSignedCatalog(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(nil)
-	sig := ed25519.Sign(priv, []byte(validBaselineTOML))
+	pub, priv, err := catalogsig.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	sig, err := catalogsig.Sign([]byte(validBaselineTOML), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/c", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(validBaselineTOML))
@@ -98,5 +75,49 @@ func TestFetchVerified_InstallsSignedCatalog(t *testing.T) {
 	}
 	if _, err := catalog.LoadFile(dest); err != nil {
 		t.Fatalf("installed signed catalog is invalid: %v", err)
+	}
+}
+
+func TestFetchVerified_RejectsEmptyCatalogAndPreservesExisting(t *testing.T) {
+	pub, priv, err := catalogsig.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	empty := []byte("")
+	sig, err := catalogsig.Sign(empty, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/c", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(empty)
+	})
+	mux.HandleFunc("/c.sig", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(sig)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "catalog-baseline.toml")
+	if err := os.WriteFile(dest, []byte(validBaselineTOML), 0o644); err != nil {
+		t.Fatalf("seed existing catalog: %v", err)
+	}
+	err = FetchVerified(context.Background(), srv.URL+"/c", srv.URL+"/c.sig", dest, HTTPFetcher{}, pub)
+	if err == nil {
+		t.Fatal("expected FetchVerified to reject a signed-but-empty catalog")
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read preserved catalog: %v", err)
+	}
+	if string(got) != validBaselineTOML {
+		t.Fatalf("existing catalog was replaced by empty body:\n%s", got)
+	}
+}
+
+func TestHTTPFetcher_RejectsPlainRemoteHTTP(t *testing.T) {
+	_, err := (HTTPFetcher{}).Fetch(context.Background(), "http://example.com/catalog.toml")
+	if err == nil {
+		t.Fatal("expected plain remote HTTP to be rejected before download")
 	}
 }
