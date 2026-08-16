@@ -1,0 +1,67 @@
+name: catalog-refresh
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Compile public known-good catalog
+        run: |
+          go run ./cmd/catalog-build refresh \
+            --baseline catalog/baseline \
+            --out catalog-baseline.toml
+
+      - name: Sign public known-good catalog
+        env:
+          CATALOG_SIGNING_PRIVATE_KEY_B64: ${{ secrets.CATALOG_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          if [ -z "$CATALOG_SIGNING_PRIVATE_KEY_B64" ]; then
+            echo "CATALOG_SIGNING_PRIVATE_KEY_B64 is required to publish a signed catalog" >&2
+            exit 1
+          fi
+          printf '%s' "$CATALOG_SIGNING_PRIVATE_KEY_B64" | base64 -d > "$RUNNER_TEMP/catalog-signing.key"
+          go run ./cmd/catalog-build sign \
+            --catalog catalog-baseline.toml \
+            --private-key "$RUNNER_TEMP/catalog-signing.key" \
+            --sig-out catalog-baseline.toml.sig \
+            --pub-out catalog-baseline.pub
+
+      - name: Validate catalog compiler
+        run: go test ./internal/catalogbuild/... -v
+
+      - name: Open publish PR if the catalog changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$(git status --porcelain -- catalog-baseline.toml catalog-baseline.toml.sig catalog-baseline.pub)" ]; then
+            echo "catalog unchanged; nothing to publish"
+            exit 0
+          fi
+          git config user.name "catalog-bot"
+          git config user.email "catalog-bot@users.noreply.github.com"
+          git switch -C catalog-auto/refresh
+          git add catalog-baseline.toml catalog-baseline.toml.sig catalog-baseline.pub
+          git commit -m "catalog: refresh public known-good baseline"
+          git push --force origin catalog-auto/refresh
+          gh pr create \
+            --base master \
+            --head catalog-auto/refresh \
+            --title "catalog: refresh public known-good baseline" \
+            --body "Regenerated catalog-baseline.toml from checked-in public known-good fragments. Round-trip validated in CI." \
+            || gh pr edit catalog-auto/refresh \
+              --title "catalog: refresh public known-good baseline" \
+              --body "Regenerated catalog-baseline.toml from checked-in public known-good fragments. Round-trip validated in CI."

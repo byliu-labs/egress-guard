@@ -12,8 +12,15 @@ versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   blocks, and offers one-click allow, pause/resume, start-at-login, and clean
   uninstall. Build with `make app`. Unsigned (Tier A) for now; signing hooks are
   stubbed in `packaging/mac/build-app.sh`.
+- Public known-good catalog source under `catalog/`, plus `cmd/catalog-build`
+  for compiling baseline fragments, refreshing the checked-in baseline artifact,
+  embedding exempt fragments, and generating/signing Ed25519 catalog artifacts
+  with `keygen` and `sign`.
 
 ### Changed
+- **Breaking (catalog fetch):** `egress-guard catalog fetch` now requires
+  `--pubkey <path>` and verifies `<url>.sig` before installing a downloaded
+  baseline catalog. Unsigned remote catalog installs are refused.
 - `egress-guard tail` is now event-driven (fsnotify — kqueue on darwin,
   inotify on linux) instead of polling every 250ms. New entries appear in
   the terminal immediately. As a side effect, `tail` now waits for the

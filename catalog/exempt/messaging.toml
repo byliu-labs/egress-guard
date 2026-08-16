@@ -1,0 +1,18 @@
+# Exempt desktop apps: messaging, calls, notes, and media.
+[[macos]]
+bundle_id = "com.tinyspeck.slackmacgap"
+
+[[macos]]
+bundle_id = "com.hnc.Discord"
+
+[[macos]]
+bundle_id = "us.zoom.xos"
+
+[[macos]]
+bundle_id = "com.spotify.client"
+
+[[macos]]
+bundle_id = "notion.id"
+
+[[macos]]
+bundle_id = "md.obsidian"

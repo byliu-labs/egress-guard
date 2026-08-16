@@ -21,6 +21,7 @@ func TestAncestorChain_IncludesSelf(t *testing.T) {
 
 	chain, err := ancestorChain(os.Getpid(), os.Getppid())
 	if err != nil {
+		skipHostProcessDenied(t, err)
 		t.Fatalf("ancestorChain: %v", err)
 	}
 	if len(chain) == 0 {
@@ -37,6 +38,7 @@ func TestAncestorChain_BoundedDepth(t *testing.T) {
 
 	chain, err := ancestorChain(os.Getpid(), os.Getppid())
 	if err != nil {
+		skipHostProcessDenied(t, err)
 		t.Fatalf("ancestorChain: %v", err)
 	}
 	if len(chain) > maxAncestorDepth+1 {
@@ -49,6 +51,7 @@ func TestLaunchdPIDLabels_NoError(t *testing.T) {
 
 	labels, err := launchdPIDLabels()
 	if err != nil {
+		skipHostProcessDenied(t, err)
 		t.Fatalf("launchdPIDLabels: %v", err)
 	}
 	t.Logf("observed %d running launchd jobs", len(labels))
@@ -59,6 +62,14 @@ func TestLaunchdPIDLabels_NoError(t *testing.T) {
 		if label == "" {
 			t.Errorf("empty label for pid %d", pid)
 		}
+	}
+}
+
+func skipHostProcessDenied(t *testing.T, err error) {
+	t.Helper()
+	msg := err.Error()
+	if strings.Contains(msg, "operation not permitted") || strings.Contains(msg, "launchctl list: exit status 1") {
+		t.Skipf("host process inspection blocked by sandbox: %v", err)
 	}
 }
 

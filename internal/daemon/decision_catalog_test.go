@@ -93,6 +93,35 @@ func TestDecideBranch_CatalogFoundAllowsWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestDecideBranch_MediumBaselineCatalogFoundAllowsWithoutPromptConfigured(t *testing.T) {
+	cat := &catalog.Catalog{}
+	pi := procid.ProcInfo{PID: 13, Exe: "/tmp/git", Comm: "git"}
+	sig := signature.SignedIdentity{}
+	if err := cat.Add(catalog.Entry{
+		SchemaVersion:        catalog.CurrentSchemaVersion,
+		Identity:             catalog.Identity{ExeBasename: "git"},
+		ExpectedDestinations: []catalog.Destination{{Host: "github.com", Why: "test fixture"}},
+		Explanation:          "git talks to GitHub",
+		Evidence:             "basename-only public catalog fixture",
+		Confidence:           catalog.ConfidenceMedium,
+		Layer:                "baseline",
+	}); err != nil {
+		t.Fatalf("cat.Add: %v", err)
+	}
+
+	d := newDaemonForBranchWithCatalog(t, nil, cat)
+	outcome, entry := d.decideBranch("github.com", nil, pi, sig)
+	if outcome != outcomeAllow {
+		t.Errorf("outcome = %v, want allow", outcome)
+	}
+	if entry.Reason != "catalog_fact" {
+		t.Errorf("entry.Reason = %q, want catalog_fact", entry.Reason)
+	}
+	if entry.TrustTier != decisionlog.TierCatalogFact {
+		t.Errorf("entry.TrustTier = %q, want catalog fact", entry.TrustTier)
+	}
+}
+
 func TestDecideBranch_NoCatalogMatchStillPromptsNeverAutoAllows(t *testing.T) {
 	cat := &catalog.Catalog{}
 	pi := procid.ProcInfo{PID: 12, Exe: "/usr/bin/newapp", Comm: "newapp"}

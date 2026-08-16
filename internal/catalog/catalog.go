@@ -185,6 +185,13 @@ func (c *Catalog) HasHost(host string) bool {
 	return false
 }
 
+// EntryCount returns the number of validated entries in the catalog.
+func (c *Catalog) EntryCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.entries)
+}
+
 // Add validates e and appends it to the catalog.
 func (c *Catalog) Add(e Entry) error {
 	if err := validateEntry(e); err != nil {

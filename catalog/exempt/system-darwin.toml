@@ -1,0 +1,20 @@
+# Apple system services matched by executable basename and Apple signature.
+[[macos]]
+exe_basename = "nsurlsessiond"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "trustd"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "softwareupdated"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "apsd"
+team_id      = "APPLE"
+
+[[macos]]
+exe_basename = "cloudd"
+team_id      = "APPLE"

@@ -1,4 +1,4 @@
-.PHONY: build bar app test test-integration clean install-dev embed
+.PHONY: build bar app test test-integration clean install-dev embed catalog-build embed-exempt
 
 GOFLAGS := -trimpath
 LDFLAGS := -s -w
@@ -17,6 +17,13 @@ bar: embed
 
 app: build bar
 	bash packaging/mac/build-app.sh
+
+catalog-build:
+	@mkdir -p bin
+	go build $(GOFLAGS) -ldflags='$(LDFLAGS)' -o bin/catalog-build ./cmd/catalog-build
+
+embed-exempt: catalog-build
+	bin/catalog-build embed-exempt --exempt catalog/exempt --out internal/exempt/defaults_embedded.toml
 
 test: embed
 	go test -race -count=1 ./...

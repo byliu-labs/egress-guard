@@ -1,0 +1,23 @@
+# Exempt browsers. Each runtime match still requires a valid signature and an
+# identity match in internal/exempt. Scripting interpreters are never exempt.
+[[macos]]
+bundle_id = "com.apple.Safari"
+team_id   = "APPLE"
+
+[[macos]]
+bundle_id = "com.google.Chrome"
+team_id   = "EQHXZ8M8AV"
+
+[[macos]]
+bundle_id = "org.mozilla.firefox"
+team_id   = "43AQ936H96"
+
+[[macos]]
+bundle_id = "com.microsoft.edgemac"
+team_id   = "UBF8T346G9"
+
+[[macos]]
+bundle_id = "company.thebrowser.Browser"
+
+[[macos]]
+bundle_id = "com.brave.Browser"

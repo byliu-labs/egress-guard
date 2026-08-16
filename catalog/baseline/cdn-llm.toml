@@ -1,0 +1,32 @@
+# Baseline allowlist facts for local LLM command-line tools.
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "Claude Code and Anthropic API tooling call api.anthropic.com as the published API base URL."
+explanation    = "Claude command-line tools send requests to the Anthropic API."
+
+[entry.identity]
+exe_basename = "claude"
+
+[[entry.expected_destinations]]
+host = "api.anthropic.com"
+why  = "Anthropic API"
+
+[[entry]]
+schema_version = 1
+layer          = "baseline"
+confidence     = "medium"
+evidence       = "ollama pulls model manifests and blobs from registry.ollama.ai and may visit ollama.com for model catalog metadata and redirects; verified against Ollama's default registry behavior."
+explanation    = "ollama downloads local model weights from the Ollama registry."
+
+[entry.identity]
+exe_basename = "ollama"
+
+[[entry.expected_destinations]]
+host = "registry.ollama.ai"
+why  = "Ollama model registry"
+
+[[entry.expected_destinations]]
+host = "ollama.com"
+why  = "Ollama model catalog and redirects"
