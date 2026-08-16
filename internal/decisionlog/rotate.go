@@ -1,8 +1,11 @@
 package decisionlog
 
 import (
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -36,6 +39,7 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 		return nil, fmt.Errorf("decisionlog: stat %s: %w", path, err)
 	}
 	w.size = fi.Size()
+	_ = sweepUncompressed(path)
 	return w, nil
 }
 
@@ -56,5 +60,86 @@ func (w *Writer) rotateLocked() error {
 	}
 	w.f = f
 	w.size = 0
+	w.wg.Add(1)
+	go func(seg string) {
+		defer w.wg.Done()
+		if err := compressSegment(seg); err != nil {
+			return
+		}
+		_ = pruneSegments(w.path, w.opts.MaxSegments)
+	}(seg)
+	return nil
+}
+
+func compressSegment(path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("decisionlog: compress open %s: %w", path, err)
+	}
+	defer in.Close()
+
+	tmp := path + gzSuffix + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("decisionlog: compress create %s: %w", tmp, err)
+	}
+	zw := gzip.NewWriter(out)
+	if _, err := io.Copy(zw, in); err != nil {
+		zw.Close()
+		out.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("decisionlog: compress copy %s: %w", path, err)
+	}
+	if err := zw.Close(); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("decisionlog: compress finish %s: %w", path, err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("decisionlog: compress close %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path+gzSuffix); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("decisionlog: compress rename %s: %w", tmp, err)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("decisionlog: compress remove plain %s: %w", path, err)
+	}
+	return nil
+}
+
+func sweepUncompressed(base string) error {
+	segs, err := findSegments(base)
+	if err != nil {
+		return err
+	}
+	for _, s := range segs {
+		if strings.HasSuffix(s, gzSuffix) {
+			continue
+		}
+		if err := compressSegment(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pruneSegments(base string, max int) error {
+	if max <= 0 {
+		return nil
+	}
+	segs, err := findSegments(base)
+	if err != nil {
+		return err
+	}
+	if len(segs) <= max {
+		return nil
+	}
+	for _, s := range segs[:len(segs)-max] {
+		if err := os.Remove(s); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("decisionlog: prune %s: %w", s, err)
+		}
+	}
 	return nil
 }

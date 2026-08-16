@@ -64,6 +64,7 @@ type Writer struct {
 	path string
 	size int64
 	opts Options
+	wg   sync.WaitGroup
 }
 
 // Open opens, creating if needed, the append-only log file at path.
@@ -109,6 +110,7 @@ func (w *Writer) Write(e Entry) error {
 
 // Close closes the underlying file.
 func (w *Writer) Close() error {
+	w.wg.Wait()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.f == nil {

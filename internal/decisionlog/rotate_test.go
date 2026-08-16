@@ -131,3 +131,115 @@ func TestWriter_SizeSeededFromExistingFile(t *testing.T) {
 		t.Fatal("writer did not seed its size from the pre-existing file, so it never rotated")
 	}
 }
+
+func TestCompressSegment_AtomicAndRemovesPlain(t *testing.T) {
+	dir := t.TempDir()
+	seg := filepath.Join(dir, "blocked.log.20260815T031422Z")
+	writeLines(t, seg, []string{"archived.example"})
+
+	if err := compressSegment(seg); err != nil {
+		t.Fatalf("compressSegment: %v", err)
+	}
+	if _, err := os.Stat(seg); !os.IsNotExist(err) {
+		t.Fatal("plain segment still present after compression")
+	}
+	if _, err := os.Stat(seg + ".gz.tmp"); !os.IsNotExist(err) {
+		t.Fatal("temp file left behind")
+	}
+	got, err := readSegment(seg + ".gz")
+	if err != nil {
+		t.Fatalf("readSegment: %v", err)
+	}
+	if len(got) != 1 || got[0].Host != "archived.example" {
+		t.Fatalf("got %+v, want one archived.example entry", got)
+	}
+}
+
+func TestSweepUncompressed_CompressesCrashLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "blocked.log")
+	seg := base + ".20260815T031422Z"
+	writeLines(t, seg, []string{"leftover.example"})
+
+	if err := sweepUncompressed(base); err != nil {
+		t.Fatalf("sweepUncompressed: %v", err)
+	}
+	if _, err := os.Stat(seg + ".gz"); err != nil {
+		t.Fatalf("leftover segment was not compressed: %v", err)
+	}
+}
+
+func TestPruneSegments_DeletesOldestBeyondMax(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "blocked.log")
+	for _, stamp := range []string{"20260813T000000Z", "20260814T000000Z", "20260815T000000Z"} {
+		writeGzLines(t, base+"."+stamp+".gz", []string{stamp})
+	}
+
+	if err := pruneSegments(base, 2); err != nil {
+		t.Fatalf("pruneSegments: %v", err)
+	}
+	segs, err := findSegments(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 2 {
+		t.Fatalf("kept %d segments, want 2", len(segs))
+	}
+	if strings.Contains(segs[0], "20260813") {
+		t.Fatal("pruneSegments deleted a newer segment instead of the oldest")
+	}
+}
+
+func TestPruneSegments_ZeroMeansUnlimited(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "blocked.log")
+	for _, stamp := range []string{"20260813T000000Z", "20260814T000000Z"} {
+		writeGzLines(t, base+"."+stamp+".gz", []string{stamp})
+	}
+	if err := pruneSegments(base, 0); err != nil {
+		t.Fatalf("pruneSegments: %v", err)
+	}
+	segs, err := findSegments(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 2 {
+		t.Fatalf("kept %d segments, want 2 -- zero must mean unlimited", len(segs))
+	}
+}
+
+func TestWriter_CloseWaitsForCompression(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "blocked.log")
+	n := 0
+	w, err := OpenWithOptions(base, Options{
+		MaxBytes: 200,
+		Now: func() time.Time {
+			n++
+			return time.Date(2026, 8, 15, 0, 0, n, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20; i++ {
+		if err := w.Write(Entry{Decision: DecisionAllow, Host: "pypi.org"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	segs, err := findSegments(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) == 0 {
+		t.Fatal("expected rotated segments")
+	}
+	for _, s := range segs {
+		if !strings.HasSuffix(s, ".gz") {
+			t.Fatalf("segment %s not compressed after Close", s)
+		}
+	}
+}
