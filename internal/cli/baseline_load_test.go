@@ -86,6 +86,30 @@ func TestLoadOrBuildBaseline_BuildsFromLog(t *testing.T) {
 	}
 }
 
+func TestLoadOrBuildBaseline_SkipsCorruptRotatedSegment(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "blocked.log")
+	cachePath := filepath.Join(dir, "baseline.json")
+	writeLog(t, logPath+".20260701T100000Z", []decisionlog.Entry{
+		logAllow("/usr/bin/curl", "api.example.com", "2026-07-01T10:00:00Z"),
+	})
+	if err := os.WriteFile(logPath+".20260702T100000Z.gz", []byte("not gzip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeLog(t, logPath, []decisionlog.Entry{
+		logAllow("/usr/bin/curl", "api.example.com", "2026-07-02T10:00:00Z"),
+	})
+
+	b, err := loadOrBuildBaseline(logPath, cachePath, &catalog.Catalog{}, &capLogger{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ev := b.Classify(logAllow("/usr/bin/curl", "api.example.com", "2026-07-03T10:00:00Z"))
+	if ev.Class != drift.ClassKnown {
+		t.Fatalf("expected learned pair known despite one corrupt segment, got class=%q reason=%q", ev.Class, ev.Reason)
+	}
+}
+
 func TestLoadOrBuildBaseline_FreshCacheIsNotRebuilt(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "blocked.log")

@@ -30,9 +30,10 @@ import (
 
 // startFlags is the parsed public surface of `egress-guard start`.
 type startFlags struct {
-	port        int
-	system      bool
-	observeOnly bool
+	port                   int
+	system                 bool
+	observeOnly            bool
+	decisionLogMaxSegments int
 }
 
 func parseStartFlags(args []string) startFlags {
@@ -40,8 +41,13 @@ func parseStartFlags(args []string) startFlags {
 	port := fs.Int("port", defaultRedirectPort, "listen port")
 	system := fs.Bool("system", false, "boot-resident mode: reassert kernel rules at startup")
 	observe := fs.Bool("observe", false, "observe-only mode: log every decision but never enforce a block")
+	maxSegments := fs.Int("decision-log-max-segments", 0, "maximum rotated decision-log segments to retain; 0 keeps all")
 	fs.Parse(args)
-	return startFlags{port: *port, system: *system, observeOnly: *observe}
+	return startFlags{port: *port, system: *system, observeOnly: *observe, decisionLogMaxSegments: *maxSegments}
+}
+
+func decisionLogOptions(flags startFlags) decisionlog.Options {
+	return decisionlog.Options{MaxSegments: flags.decisionLogMaxSegments}
 }
 
 // Start runs the daemon in the foreground. v0.1: no daemonization;
@@ -81,7 +87,7 @@ func Start(args []string) error {
 		return fmt.Errorf("resolve state dir: %w", err)
 	}
 	logPath := filepath.Join(state, "blocked.log")
-	bl, err := decisionlog.Open(logPath)
+	bl, err := decisionlog.OpenWithOptions(logPath, decisionLogOptions(flags))
 	if err != nil {
 		return fmt.Errorf("open decision log: %w", err)
 	}
@@ -209,6 +215,7 @@ func Status(args []string) error {
 	default:
 		fmt.Println("kernel rules: NOT installed (run `sudo egress-guard install`)")
 	}
+	printLogFootprint(os.Stdout)
 	return printPlatformStatus(os.Stdout)
 }
 
@@ -260,12 +267,14 @@ func baselineCachePath() (string, error) {
 // loadOrBuildBaseline returns the drift baseline the daemon should consult. It
 // prefers the on-disk cache but rebuilds from decision-log history whenever the
 // cache is missing, stale (the log holds newer traffic than the cache folded),
-// or unreadable — then persists the rebuilt snapshot. A missing decision log
-// yields an empty baseline (every connection novel until history accrues), not
-// an error. cat is attached to the baseline by reference for catalog-aware
-// classification.
+// or unreadable — then persists the rebuilt snapshot. It reads rotated segments
+// as well as the live file, because BuildBaseline needs stable pairs across
+// distinct days and rotation must not make learned traffic look novel again. A
+// missing decision log yields an empty baseline (every connection novel until
+// history accrues), not an error. cat is attached to the baseline by reference
+// for catalog-aware classification.
 func loadOrBuildBaseline(logPath, cachePath string, cat *catalog.Catalog, logger prompt.Logger) (*drift.Baseline, error) {
-	entries, err := decisionlog.Read(logPath)
+	entries, err := decisionlog.ReadHistory(logPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read decision log for baseline: %w", err)
 	}
