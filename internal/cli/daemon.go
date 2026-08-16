@@ -260,12 +260,14 @@ func baselineCachePath() (string, error) {
 // loadOrBuildBaseline returns the drift baseline the daemon should consult. It
 // prefers the on-disk cache but rebuilds from decision-log history whenever the
 // cache is missing, stale (the log holds newer traffic than the cache folded),
-// or unreadable — then persists the rebuilt snapshot. A missing decision log
-// yields an empty baseline (every connection novel until history accrues), not
-// an error. cat is attached to the baseline by reference for catalog-aware
-// classification.
+// or unreadable — then persists the rebuilt snapshot. It reads rotated segments
+// as well as the live file, because BuildBaseline needs stable pairs across
+// distinct days and rotation must not make learned traffic look novel again. A
+// missing decision log yields an empty baseline (every connection novel until
+// history accrues), not an error. cat is attached to the baseline by reference
+// for catalog-aware classification.
 func loadOrBuildBaseline(logPath, cachePath string, cat *catalog.Catalog, logger prompt.Logger) (*drift.Baseline, error) {
-	entries, err := decisionlog.Read(logPath)
+	entries, err := decisionlog.ReadHistory(logPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read decision log for baseline: %w", err)
 	}
