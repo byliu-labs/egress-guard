@@ -1,5 +1,5 @@
 // Package decisionlog records every egress decision the daemon adjudicates
-// — allow, deny, or observe — as one JSON object per line.
+// — allow, deny, observe, or ask — as one JSON object per line.
 package decisionlog
 
 import (
@@ -20,6 +20,7 @@ const (
 	DecisionAllow   Decision = "allow"
 	DecisionDeny    Decision = "deny"
 	DecisionObserve Decision = "observe"
+	DecisionAsk     Decision = "ask"
 )
 
 // TrustTier records how a Decision was reached.

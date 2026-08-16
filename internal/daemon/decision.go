@@ -286,10 +286,7 @@ func (d *Daemon) handle(conn net.Conn) {
 
 	outcome, entry := d.decideBranch(host, dstIP, pi, sig)
 	entry.DestIP, entry.DestPort = dstIP.String(), dstPort
-	if d.opts.ObserveOnly {
-		entry.Decision = decisionlog.DecisionObserve
-		outcome = outcomeAllow
-	}
+	outcome, entry = d.finalizeOutcome(outcome, entry)
 
 	switch outcome {
 	case outcomeAllow:

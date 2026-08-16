@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -70,10 +71,19 @@ func (f *Follower) Follow(ctx context.Context) error {
 		return err
 	}
 
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-ticker.C:
+			next, err := syncPath(f.Path, fp, f.Out)
+			if err != nil {
+				return err
+			}
+			fp = next
 		case ev, ok := <-w.Events:
 			if !ok {
 				return nil
@@ -81,23 +91,14 @@ func (f *Follower) Follow(ctx context.Context) error {
 			if ev.Name != f.Path {
 				continue
 			}
-			switch {
-			case ev.Op&fsnotify.Write != 0:
-				if fp == nil {
-					// A Write event can arrive before Create on some
-					// filesystems; skip until the Create branch opens fp.
-					continue
-				}
-				if err := drain(fp, f.Out); err != nil {
-					return err
-				}
-			case ev.Op&(fsnotify.Rename|fsnotify.Remove) != 0:
+			if ev.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
 				// Old handle is now detached; reopen on the next Create.
 				if fp != nil {
 					fp.Close()
 				}
 				fp = nil
-			case ev.Op&fsnotify.Create != 0:
+			}
+			if ev.Op&fsnotify.Create != 0 {
 				if fp != nil {
 					fp.Close()
 				}
@@ -108,6 +109,23 @@ func (f *Follower) Follow(ctx context.Context) error {
 				// Don't seek: a freshly-rotated file starts at 0, and we
 				// want every byte written to it.
 				fp = newFp
+				if err := drain(fp, f.Out); err != nil {
+					return err
+				}
+			}
+			if ev.Op&fsnotify.Write != 0 {
+				if fp == nil {
+					// Some filesystems coalesce or drop Create around
+					// rotation; a later Write is still enough to reopen.
+					newFp, err := os.Open(f.Path)
+					if errors.Is(err, os.ErrNotExist) {
+						continue
+					}
+					if err != nil {
+						return fmt.Errorf("tail: reopen %s: %w", f.Path, err)
+					}
+					fp = newFp
+				}
 				if err := drain(fp, f.Out); err != nil {
 					return err
 				}
@@ -139,6 +157,45 @@ func drain(fp *os.File, out io.Writer) error {
 			return fmt.Errorf("tail: read: %w", err)
 		}
 	}
+}
+
+func syncPath(path string, fp *os.File, out io.Writer) (*os.File, error) {
+	if fp == nil {
+		return openAndDrain(path, out)
+	}
+
+	pathInfo, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		fp.Close()
+		return nil, nil
+	}
+	if err != nil {
+		return fp, fmt.Errorf("tail: stat %s: %w", path, err)
+	}
+	openInfo, err := fp.Stat()
+	if err != nil {
+		return fp, fmt.Errorf("tail: stat open file: %w", err)
+	}
+	if !os.SameFile(pathInfo, openInfo) {
+		fp.Close()
+		return openAndDrain(path, out)
+	}
+	return fp, drain(fp, out)
+}
+
+func openAndDrain(path string, out io.Writer) (*os.File, error) {
+	fp, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tail: reopen %s: %w", path, err)
+	}
+	if err := drain(fp, out); err != nil {
+		fp.Close()
+		return nil, err
+	}
+	return fp, nil
 }
 
 // openAndSeekEnd opens path read-only and seeks to the end so the follower

@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
@@ -13,13 +11,14 @@ import (
 )
 
 func TestEntryFor_SetsPersistenceForKnownPID(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	restore := stubPersistenceAttribute(t, persist.Source{Kind: persist.KindSession}, nil)
+	defer restore()
 
 	pi := procid.ProcInfo{
-		PID:  os.Getpid(),
-		PPID: os.Getppid(),
-		Exe:  os.Args[0],
-		Comm: filepath.Base(os.Args[0]),
+		PID:  123,
+		PPID: 1,
+		Exe:  "/usr/bin/tool",
+		Comm: "tool",
 	}
 	entry := entryFor(decisionlog.DecisionAllow, "", "test.example.com", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
 	if entry.Persistence == nil {
