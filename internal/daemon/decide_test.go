@@ -31,7 +31,7 @@ func newDaemonForDecide(t *testing.T, observeOnly bool) *Daemon {
 func TestDecide_AllowlistAllow(t *testing.T) {
 	d := newDaemonForDecide(t, false)
 
-	entry := d.Decide("good.example", net.ParseIP("203.0.113.10"), procid.ProcInfo{}, signature.SignedIdentity{})
+	_, entry := d.Decide("good.example", net.ParseIP("203.0.113.10"), procid.ProcInfo{}, signature.SignedIdentity{})
 
 	if entry.Decision != decisionlog.DecisionAllow {
 		t.Errorf("Decision = %q, want allow", entry.Decision)
@@ -41,7 +41,7 @@ func TestDecide_AllowlistAllow(t *testing.T) {
 func TestDecide_UnknownNoPrompt_Denies(t *testing.T) {
 	d := newDaemonForDecide(t, false)
 
-	entry := d.Decide("unknown.example", net.ParseIP("203.0.113.10"), procid.ProcInfo{}, signature.SignedIdentity{})
+	_, entry := d.Decide("unknown.example", net.ParseIP("203.0.113.10"), procid.ProcInfo{}, signature.SignedIdentity{})
 
 	if entry.Decision != decisionlog.DecisionDeny {
 		t.Errorf("Decision = %q, want deny", entry.Decision)
@@ -54,10 +54,13 @@ func TestDecide_UnknownNoPrompt_Denies(t *testing.T) {
 func TestDecide_ObserveOnly_LogsObserveEnforcesAllow(t *testing.T) {
 	d := newDaemonForDecide(t, true)
 
-	entry := d.Decide("unknown.example", net.ParseIP("203.0.113.10"), procid.ProcInfo{}, signature.SignedIdentity{})
+	dec, entry := d.Decide("unknown.example", net.ParseIP("203.0.113.10"), procid.ProcInfo{}, signature.SignedIdentity{})
 
 	if entry.Decision != decisionlog.DecisionObserve {
 		t.Errorf("Decision = %q, want observe", entry.Decision)
+	}
+	if dec != decisionlog.DecisionObserve {
+		t.Errorf("authoritative decision = %q, want observe", dec)
 	}
 }
 

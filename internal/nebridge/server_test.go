@@ -407,8 +407,8 @@ type entryDecider struct {
 	entry decisionlog.Entry
 }
 
-func (d entryDecider) Decide(string, net.IP, procid.ProcInfo, signature.SignedIdentity) decisionlog.Entry {
-	return d.entry
+func (d entryDecider) Decide(string, net.IP, procid.ProcInfo, signature.SignedIdentity) (decisionlog.Decision, decisionlog.Entry) {
+	return d.entry.Decision, d.entry
 }
 
 func testSocketPath(tb testing.TB) string {

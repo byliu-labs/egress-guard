@@ -20,7 +20,7 @@ import (
 // Decider is satisfied by daemon.Daemon. It returns the audit entry for one
 // decision; Server persists that entry after adding bridge destination data.
 type Decider interface {
-	Decide(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) decisionlog.Entry
+	Decide(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionlog.Decision, decisionlog.Entry)
 }
 
 // Server turns one NEFilter request into one decision response.
@@ -159,12 +159,15 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		entry := s.Decider.Decide(host, req.DstIP, pi, sig)
+		dec, entry := s.Decider.Decide(host, req.DstIP, pi, sig)
 		entry.DestIP = req.DstIP.String()
 		entry.DestPort = req.DstPort
-		response, entry := responseForEntry(host, entry)
-		_ = s.Log.Write(entry)
-		s.writeResponse(conn, response)
+		entry = logEntryForDecision(dec, entry)
+		if err := s.Log.Write(entry); err != nil {
+			s.drop(conn, host, req, "log_write_failed: "+err.Error())
+			continue
+		}
+		s.writeResponse(conn, Response{Verdict: verdictFor(dec), Host: host, Reason: entry.Reason})
 	}
 }
 
@@ -192,20 +195,27 @@ func (s *Server) logDeny(destIP string, destPort int, host, reason string) {
 	})
 }
 
-func responseForEntry(host string, entry decisionlog.Entry) (Response, decisionlog.Entry) {
-	switch entry.Decision {
+// verdictFor maps a decision to a wire verdict. Allow is an explicit
+// whitelist, never an else-branch: an unrecognized decision state cannot
+// authorize egress.
+func verdictFor(dec decisionlog.Decision) Verdict {
+	switch dec {
 	case decisionlog.DecisionAllow, decisionlog.DecisionObserve:
-		return Response{Verdict: VerdictAllow, Host: host, Reason: entry.Reason}, entry
-	case decisionlog.DecisionDeny:
-		return Response{Verdict: VerdictDrop, Host: host, Reason: entry.Reason}, entry
-	case decisionlog.DecisionAsk:
-		return Response{Verdict: VerdictAsk, Host: host, Reason: entry.Reason}, entry
+		return VerdictAllow
 	default:
-		reason := invalidDecisionReason(entry.Decision)
+		return VerdictDrop
+	}
+}
+
+func logEntryForDecision(dec decisionlog.Decision, entry decisionlog.Entry) decisionlog.Entry {
+	switch dec {
+	case decisionlog.DecisionAllow, decisionlog.DecisionObserve, decisionlog.DecisionDeny:
+		return entry
+	default:
 		entry.Decision = decisionlog.DecisionDeny
 		entry.Action = string(decisionlog.DecisionDeny)
-		entry.Reason = reason
-		return Response{Verdict: VerdictDrop, Host: host, Reason: reason}, entry
+		entry.Reason = invalidDecisionReason(dec)
+		return entry
 	}
 }
 
