@@ -113,16 +113,26 @@ func TestDecideBranch_NameOnlyBaselineDoesNotAllowWithoutPrompt(t *testing.T) {
 		t.Fatalf("cat.Add: %v", err)
 	}
 
-	d := newDaemonForBranchWithCatalog(t, nil, cat)
+	dec := &capturingDecider{}
+	d := newDaemonForBranchWithCatalog(t, dec, cat)
 	outcome, entry := d.decideBranch("github.com", nil, pi, sig)
 	if outcome != outcomeDeny {
 		t.Errorf("outcome = %v, want deny", outcome)
 	}
-	if entry.Reason != "host_unknown_no_prompt" {
-		t.Errorf("entry.Reason = %q, want host_unknown_no_prompt", entry.Reason)
+	if entry.Reason != "user_denied_or_timeout" {
+		t.Errorf("entry.Reason = %q, want user_denied_or_timeout", entry.Reason)
 	}
-	if entry.TrustTier != decisionlog.TierDefault {
-		t.Errorf("entry.TrustTier = %q, want default", entry.TrustTier)
+	if !dec.called {
+		t.Fatal("prompt was not shown for non-authoritative catalog match")
+	}
+	if !dec.got.CatalogMatch.Found {
+		t.Fatal("prompt did not receive the baseline explanation")
+	}
+	if dec.got.CatalogMatch.Authoritative {
+		t.Fatal("basename-only baseline entry must not be authoritative")
+	}
+	if entry.TrustTier != decisionlog.TierPrompt {
+		t.Errorf("entry.TrustTier = %q, want prompt", entry.TrustTier)
 	}
 }
 

@@ -69,11 +69,13 @@ type LayerFile struct {
 }
 
 // MatchResult is the answer to whether the catalog has a fact about an
-// identity and host pairing.
+// identity and host pairing. Found means the catalog can explain the prompt;
+// Authoritative means it can decide without asking.
 type MatchResult struct {
-	Found    bool
-	Entry    Entry
-	NeverHit bool
+	Found         bool
+	Entry         Entry
+	NeverHit      bool
+	Authoritative bool
 }
 
 // Load parses TOML bytes into a Catalog, rejecting invalid entries.
@@ -137,27 +139,28 @@ func (c *Catalog) Merge(other *Catalog) {
 	c.entries = append(c.entries, entries...)
 }
 
-// Lookup matches id against pinned identity facts. Name-only entries can be
-// loaded as documentation, but they are decision-inert: a catalog allow needs
-// exe_sha256, team_id, or bundle_id, optionally narrowed by exe_basename.
+// Lookup matches id and host against catalog facts. Name-only baseline/pro
+// entries can explain a prompt, but only user-ratified entries or pinned
+// entries can decide without asking.
 func (c *Catalog) Lookup(id Identity, host string) MatchResult {
 	nh := normalizeHost(host)
 	var expected MatchResult
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, e := range c.entries {
-		if !identityMatches(e.Identity, id) {
+		if !identityDescribes(e.Identity, id) {
 			continue
 		}
+		authoritative := entryCanDecide(e)
 		for _, never := range e.Never {
 			if normalizeHost(never) == nh {
-				return MatchResult{Found: true, Entry: e, NeverHit: true}
+				return MatchResult{Found: true, Entry: e, NeverHit: true, Authoritative: authoritative}
 			}
 		}
 		for _, d := range e.ExpectedDestinations {
 			if normalizeHost(d.Host) == nh {
-				if !expected.Found {
-					expected = MatchResult{Found: true, Entry: e}
+				if !expected.Found || (!expected.Authoritative && authoritative) {
+					expected = MatchResult{Found: true, Entry: e, Authoritative: authoritative}
 				}
 			}
 		}
@@ -217,8 +220,8 @@ func (c *Catalog) Marshal() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func identityMatches(entryID, queryID Identity) bool {
-	if !hasDecisionPin(entryID) {
+func identityDescribes(entryID, queryID Identity) bool {
+	if entryID.ExeSHA256 == "" && entryID.BundleID == "" && entryID.TeamID == "" && entryID.ExeBasename == "" {
 		return false
 	}
 	if entryID.ExeSHA256 != "" && !strings.EqualFold(entryID.ExeSHA256, queryID.ExeSHA256) {
@@ -234,6 +237,10 @@ func identityMatches(entryID, queryID Identity) bool {
 		return false
 	}
 	return true
+}
+
+func entryCanDecide(e Entry) bool {
+	return e.Layer == "user" || hasDecisionPin(e.Identity)
 }
 
 func hasDecisionPin(id Identity) bool {

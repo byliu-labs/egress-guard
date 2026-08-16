@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -133,7 +135,7 @@ func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig
 			if match.NeverHit {
 				return outcomeDeny, entryFor(decisionlog.DecisionDeny, "catalog_never_hit", host, pi, sig, decisionlog.TierCatalogFact)
 			}
-			if match.Found {
+			if match.Found && match.Authoritative {
 				if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
 					return outcome, entry
 				}
@@ -181,6 +183,58 @@ func exeSHA256(path string) string {
 	if path == "" {
 		return ""
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	key := path + "\x00" + info.ModTime().UTC().Format(time.RFC3339Nano) + "\x00" + itoa64(info.Size())
+
+	exeHashMu.Lock()
+	if elem, ok := exeHashIndex[key]; ok {
+		exeHashLRU.MoveToFront(elem)
+		sum := elem.Value.(*exeHashEntry).sum
+		exeHashMu.Unlock()
+		return sum
+	}
+	exeHashMu.Unlock()
+
+	sum := hashExecutable(path)
+	if sum == "" {
+		return ""
+	}
+
+	exeHashMu.Lock()
+	defer exeHashMu.Unlock()
+	if elem, ok := exeHashIndex[key]; ok {
+		exeHashLRU.MoveToFront(elem)
+		return elem.Value.(*exeHashEntry).sum
+	}
+	ent := &exeHashEntry{key: key, sum: sum}
+	elem := exeHashLRU.PushFront(ent)
+	exeHashIndex[key] = elem
+	if exeHashLRU.Len() > maxExeHashCacheEntries {
+		oldest := exeHashLRU.Back()
+		exeHashLRU.Remove(oldest)
+		delete(exeHashIndex, oldest.Value.(*exeHashEntry).key)
+	}
+	return sum
+}
+
+const maxExeHashCacheEntries = 256
+
+type exeHashEntry struct {
+	key string
+	sum string
+}
+
+var (
+	exeHashMu      sync.Mutex
+	exeHashLRU     = list.New()
+	exeHashIndex   = map[string]*list.Element{}
+	hashExecutable = hashExecutableFile
+)
+
+func hashExecutableFile(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
@@ -193,18 +247,23 @@ func exeSHA256(path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func itoa64(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
 func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) drift.Event {
 	entry := decisionlog.Entry{
-		Host:     host,
-		Exe:      pi.Exe,
-		Comm:     pi.Comm,
-		PName:    pi.PComm,
-		TeamID:   sig.TeamID,
-		SigValid: sig.Valid,
-		PID:      pi.PID,
-		PPID:     pi.PPID,
-		Argv:     pi.Argv,
-		Cwd:      pi.Cwd,
+		Host:      host,
+		Exe:       pi.Exe,
+		Comm:      pi.Comm,
+		PName:     pi.PComm,
+		ExeSHA256: id.ExeSHA256,
+		TeamID:    sig.TeamID,
+		SigValid:  sig.Valid,
+		PID:       pi.PID,
+		PPID:      pi.PPID,
+		Argv:      pi.Argv,
+		Cwd:       pi.Cwd,
 	}
 	if b := d.baseline.Load(); b != nil {
 		return b.Classify(entry)

@@ -351,7 +351,7 @@ func TestCatalog_HasHost(t *testing.T) {
 	}
 }
 
-func TestCatalog_Lookup_NameOnlyEntryIsDecisionInert(t *testing.T) {
+func TestCatalog_Lookup_NameOnlyEntryExplainsButDoesNotDecide(t *testing.T) {
 	toml := `
 [[entry]]
 schema_version = 1
@@ -371,8 +371,85 @@ host = "api.mytool.example"
 		t.Fatalf("Load: %v", err)
 	}
 	res := c.Lookup(Identity{ExeBasename: "mytool"}, "api.mytool.example")
-	if res.Found {
-		t.Errorf("name-only identity must not produce a catalog allow: %+v", res)
+	if !res.Found {
+		t.Errorf("name-only identity should explain the prompt: %+v", res)
+	}
+	if res.Authoritative {
+		t.Errorf("name-only baseline identity must not decide silently: %+v", res)
+	}
+}
+
+func TestCatalog_Lookup_NameOnlyNeverHit(t *testing.T) {
+	toml := `
+[[entry]]
+schema_version = 1
+layer = "baseline"
+confidence = "medium"
+evidence = "observed consistently across dev machines"
+explanation = "mytool must never reach this host"
+never = ["blocked.mytool.example"]
+
+[entry.identity]
+exe_basename = "mytool"
+`
+	c, err := Load([]byte(toml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	res := c.Lookup(Identity{ExeBasename: "mytool"}, "blocked.mytool.example")
+	if !res.Found || !res.NeverHit {
+		t.Errorf("name-only never rule should be visible to lookup: %+v", res)
+	}
+	if res.Authoritative {
+		t.Errorf("name-only baseline never rule must not be marked authoritative: %+v", res)
+	}
+}
+
+func TestCatalog_Lookup_AuthoritativeExpectedDestinationWinsOverEarlierPromptContext(t *testing.T) {
+	baseTOML := `
+[[entry]]
+schema_version = 1
+layer = "baseline"
+confidence = "medium"
+evidence = "baseline explains a common tool"
+explanation = "mytool talks to its API"
+
+[entry.identity]
+exe_basename = "mytool"
+
+[[entry.expected_destinations]]
+host = "api.mytool.example"
+`
+	userTOML := `
+[[entry]]
+schema_version = 1
+layer = "user"
+confidence = "medium"
+evidence = "user ratified after a drift prompt"
+explanation = "mytool talks to its API"
+
+[entry.identity]
+exe_basename = "mytool"
+
+[[entry.expected_destinations]]
+host = "api.mytool.example"
+`
+	base, err := Load([]byte(baseTOML))
+	if err != nil {
+		t.Fatalf("Load(base): %v", err)
+	}
+	user, err := Load([]byte(userTOML))
+	if err != nil {
+		t.Fatalf("Load(user): %v", err)
+	}
+	base.Merge(user)
+
+	res := base.Lookup(Identity{ExeBasename: "mytool"}, "api.mytool.example")
+	if !res.Found || !res.Authoritative {
+		t.Fatalf("user ratification should make later matching lookups authoritative: %+v", res)
+	}
+	if res.Entry.Layer != "user" {
+		t.Fatalf("Entry.Layer = %q, want user", res.Entry.Layer)
 	}
 }
 
@@ -399,7 +476,7 @@ host = "api.mytool.example"
 	if got := c.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "api.mytool.example"); got.Found {
 		t.Fatalf("wrong binary hash matched catalog entry: %+v", got)
 	}
-	if got := c.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, "api.mytool.example"); !got.Found {
+	if got := c.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, "api.mytool.example"); !got.Found || !got.Authoritative {
 		t.Fatalf("matching binary hash did not match catalog entry: %+v", got)
 	}
 }
