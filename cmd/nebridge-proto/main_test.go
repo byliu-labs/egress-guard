@@ -62,19 +62,49 @@ func TestNebridgeProto_BinderDropsMismatchAndDNSFailure(t *testing.T) {
 	}
 }
 
-func TestNebridgeProto_DefaultSocketUsesPrivateDirectory(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+func TestDefaultSocketPath_NonRootUsesStateDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("non-root default path is not used when running as root")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	defaultSocket, err := defaultSocketPath()
 	if err != nil {
 		t.Fatalf("defaultSocketPath: %v", err)
 	}
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatalf("UserCacheDir: %v", err)
-	}
-	want := filepath.Join(cacheDir, "egress-guard", defaultSocketName)
+	want := filepath.Join(home, ".local", "state", "egress-guard", defaultSocketName)
 	if defaultSocket != want {
 		t.Fatalf("default socket = %q, want %q", defaultSocket, want)
+	}
+}
+
+func TestDefaultSocketPath_RootIsNotWorldWritable(t *testing.T) {
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		t.Fatalf("defaultSocketPath: %v", err)
+	}
+	dir := filepath.Dir(defaultSocket)
+	for {
+		info, err := os.Stat(dir)
+		if err == nil {
+			if info.Mode().Perm()&0o002 != 0 {
+				t.Fatalf("socket ancestor %s is world-writable (%v)", dir, info.Mode().Perm())
+			}
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no existing ancestor of %s", defaultSocket)
+		}
+		dir = parent
+	}
+}
+
+func TestNebridgeProto_DefaultSocketDirectoryCanBeCreatedPrivate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		t.Fatalf("defaultSocketPath: %v", err)
 	}
 	root := shortSocketDir(t)
 	socketPath := filepath.Join(root, filepath.Base(filepath.Dir(defaultSocket)), filepath.Base(defaultSocket))

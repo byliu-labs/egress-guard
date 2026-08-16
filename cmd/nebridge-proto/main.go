@@ -125,11 +125,14 @@ func defaultDecisionLogPath() (string, error) {
 }
 
 func defaultSocketPath() (string, error) {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("nebridge-proto: resolve user cache directory: %w", err)
+	if os.Getuid() == 0 {
+		return filepath.Join("/var/run", "egress-guard", defaultSocketName), nil
 	}
-	return filepath.Join(cacheDir, "egress-guard", defaultSocketName), nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("nebridge-proto: resolve home directory for socket path: %w", err)
+	}
+	return filepath.Join(home, ".local", "state", "egress-guard", defaultSocketName), nil
 }
 
 func loadLayeredCatalog() (*catalog.Catalog, error) {
