@@ -129,7 +129,7 @@ func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig
 			if match.NeverHit {
 				return outcomeDeny, entryFor(decisionlog.DecisionDeny, "catalog_never_hit", host, pi, sig, decisionlog.TierCatalogFact)
 			}
-			if match.Found && silentCatalogAllow(match.Entry) {
+			if match.Found {
 				if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
 					return outcome, entry
 				}
@@ -163,10 +163,6 @@ func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig
 			return outcomeDeny, entryFor(decisionlog.DecisionDeny, "user_denied_or_timeout", host, pi, sig, decisionlog.TierPrompt)
 		}
 	}
-}
-
-func silentCatalogAllow(e catalog.Entry) bool {
-	return e.Confidence == catalog.ConfidenceHigh || e.Layer == "user"
 }
 
 func identityFor(pi procid.ProcInfo, sig signature.SignedIdentity) catalog.Identity {

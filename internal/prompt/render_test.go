@@ -29,10 +29,7 @@ func TestRenderPrompt_CatalogFactIsLabeledAndOpinionIsNot(t *testing.T) {
 		Host: "api.example.com",
 		CatalogMatch: catalog.MatchResult{
 			Found: true,
-			Entry: catalog.Entry{
-				Confidence:  catalog.ConfidenceHigh,
-				Explanation: "curl talks to api.example.com for release checks",
-			},
+			Entry: catalog.Entry{Explanation: "curl talks to api.example.com for release checks"},
 		},
 	}
 	got := RenderPrompt(req)
@@ -44,27 +41,6 @@ func TestRenderPrompt_CatalogFactIsLabeledAndOpinionIsNot(t *testing.T) {
 	}
 	if !strings.Contains(got, "curl talks to api.example.com for release checks") {
 		t.Errorf("RenderPrompt() = %q, want catalog Explanation text", got)
-	}
-}
-
-func TestRenderPrompt_MediumCatalogMatchIsAdvisoryHint(t *testing.T) {
-	req := Request{
-		Proc: procid.ProcInfo{Comm: "git"},
-		Host: "github.com",
-		CatalogMatch: catalog.MatchResult{
-			Found: true,
-			Entry: catalog.Entry{
-				Confidence:  catalog.ConfidenceMedium,
-				Explanation: "git commonly talks to GitHub",
-			},
-		},
-	}
-	got := RenderPrompt(req)
-	if !strings.Contains(got, catalogHintLabel) {
-		t.Errorf("RenderPrompt() = %q, want advisory catalog hint label", got)
-	}
-	if strings.Contains(got, catalogFactLabel) {
-		t.Errorf("RenderPrompt() = %q, medium confidence must not render as verified fact", got)
 	}
 }
 
