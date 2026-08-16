@@ -81,23 +81,14 @@ func (f *Follower) Follow(ctx context.Context) error {
 			if ev.Name != f.Path {
 				continue
 			}
-			switch {
-			case ev.Op&fsnotify.Write != 0:
-				if fp == nil {
-					// A Write event can arrive before Create on some
-					// filesystems; skip until the Create branch opens fp.
-					continue
-				}
-				if err := drain(fp, f.Out); err != nil {
-					return err
-				}
-			case ev.Op&(fsnotify.Rename|fsnotify.Remove) != 0:
+			if ev.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
 				// Old handle is now detached; reopen on the next Create.
 				if fp != nil {
 					fp.Close()
 				}
 				fp = nil
-			case ev.Op&fsnotify.Create != 0:
+			}
+			if ev.Op&fsnotify.Create != 0 {
 				if fp != nil {
 					fp.Close()
 				}
@@ -108,6 +99,16 @@ func (f *Follower) Follow(ctx context.Context) error {
 				// Don't seek: a freshly-rotated file starts at 0, and we
 				// want every byte written to it.
 				fp = newFp
+				if err := drain(fp, f.Out); err != nil {
+					return err
+				}
+			}
+			if ev.Op&fsnotify.Write != 0 {
+				if fp == nil {
+					// A Write event can arrive before Create on some
+					// filesystems; skip until a Create opens fp.
+					continue
+				}
 				if err := drain(fp, f.Out); err != nil {
 					return err
 				}
