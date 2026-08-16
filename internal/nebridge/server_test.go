@@ -114,8 +114,8 @@ func TestServer_MalformedRequestIsLogged(t *testing.T) {
 	if response.Verdict != VerdictDrop {
 		t.Fatalf("Verdict = %v, want drop", response.Verdict)
 	}
-	if !strings.HasPrefix(response.Reason, "malformed_request:") {
-		t.Fatalf("Reason = %q, want malformed_request prefix", response.Reason)
+	if !strings.HasPrefix(response.Reason, "frame_decode_failed:") {
+		t.Fatalf("Reason = %q, want frame_decode_failed prefix", response.Reason)
 	}
 	_ = connection.Close()
 
@@ -123,8 +123,8 @@ func TestServer_MalformedRequestIsLogged(t *testing.T) {
 	if entry.Decision != decisionlog.DecisionDeny {
 		t.Fatalf("logged decision = %q, want deny", entry.Decision)
 	}
-	if !strings.HasPrefix(entry.Reason, "malformed_request:") {
-		t.Fatalf("Reason = %q, want malformed_request prefix", entry.Reason)
+	if !strings.HasPrefix(entry.Reason, "frame_decode_failed:") {
+		t.Fatalf("Reason = %q, want frame_decode_failed prefix", entry.Reason)
 	}
 }
 

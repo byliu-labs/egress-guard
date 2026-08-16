@@ -2,7 +2,9 @@ package nebridge
 
 import (
 	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/procid"
@@ -48,4 +50,50 @@ type deciderFunc func(string, net.IP, procid.ProcInfo, signature.SignedIdentity)
 
 func (f deciderFunc) Decide(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionlog.Decision, decisionlog.Entry) {
 	return f(host, dstIP, pi, sig)
+}
+
+func TestServer_MalformedFrameDeniesAndLogs(t *testing.T) {
+	server := newTestServer(t, true, StubResolver{})
+
+	conn, err := net.Dial("unix", server.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte{0x01, 0x02, 0x03, 0x04}); err != nil {
+		t.Fatal(err)
+	}
+	if unixConn, ok := conn.(*net.UnixConn); ok {
+		_ = unixConn.CloseWrite()
+	}
+
+	buf := make([]byte, 64)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := conn.Read(buf)
+	if n == 0 {
+		t.Fatal("server sent no response to a malformed frame -- the provider's default would decide the flow")
+	}
+
+	entries, err := decisionlog.Read(server.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range entries {
+		if !strings.Contains(entry.Reason, "frame_decode_failed") {
+			continue
+		}
+		found = true
+		if entry.Decision != decisionlog.DecisionDeny {
+			t.Errorf("decode failure logged as %q, want deny", entry.Decision)
+		}
+		if entry.TrustTier != decisionlog.TierDefault {
+			t.Errorf("decode failure trust tier = %q, want default", entry.TrustTier)
+		}
+	}
+	if !found {
+		t.Fatal("a malformed frame produced no frame_decode_failed decision-log entry")
+	}
 }

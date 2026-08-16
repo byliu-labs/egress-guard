@@ -142,7 +142,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			if errors.Is(err, io.EOF) {
 				return
 			}
-			reason := "malformed_request: " + err.Error()
+			reason := "frame_decode_failed: " + err.Error()
 			s.logDeny("", 0, "", reason)
 			s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
 			return
@@ -173,12 +173,13 @@ func (s *Server) handleConn(conn net.Conn) {
 
 func (s *Server) drop(conn net.Conn, host string, req Request, reason string) {
 	entry := decisionlog.Entry{
-		Decision: decisionlog.DecisionDeny,
-		Action:   string(decisionlog.DecisionDeny),
-		Reason:   reason,
-		Host:     host,
-		DestIP:   req.DstIP.String(),
-		DestPort: req.DstPort,
+		Decision:  decisionlog.DecisionDeny,
+		Action:    string(decisionlog.DecisionDeny),
+		TrustTier: decisionlog.TierDefault,
+		Reason:    reason,
+		Host:      host,
+		DestIP:    req.DstIP.String(),
+		DestPort:  req.DstPort,
 	}
 	_ = s.Log.Write(entry)
 	s.writeResponse(conn, Response{Verdict: VerdictDrop, Host: host, Reason: reason})
@@ -186,12 +187,13 @@ func (s *Server) drop(conn net.Conn, host string, req Request, reason string) {
 
 func (s *Server) logDeny(destIP string, destPort int, host, reason string) {
 	_ = s.Log.Write(decisionlog.Entry{
-		Decision: decisionlog.DecisionDeny,
-		Action:   string(decisionlog.DecisionDeny),
-		Reason:   reason,
-		Host:     host,
-		DestIP:   destIP,
-		DestPort: destPort,
+		Decision:  decisionlog.DecisionDeny,
+		Action:    string(decisionlog.DecisionDeny),
+		TrustTier: decisionlog.TierDefault,
+		Reason:    reason,
+		Host:      host,
+		DestIP:    destIP,
+		DestPort:  destPort,
 	})
 }
 
