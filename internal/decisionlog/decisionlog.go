@@ -94,6 +94,9 @@ func (w *Writer) Write(e Entry) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.f == nil {
+		return fmt.Errorf("decisionlog: write after close")
+	}
 	b = append(b, '\n')
 	if w.opts.MaxBytes > 0 && w.size > 0 && w.size+int64(len(b)) > w.opts.MaxBytes {
 		if err := w.rotateLocked(); err != nil {
@@ -110,13 +113,14 @@ func (w *Writer) Write(e Entry) error {
 
 // Close closes the underlying file.
 func (w *Writer) Close() error {
-	w.wg.Wait()
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.f == nil {
+		w.mu.Unlock()
 		return nil
 	}
 	err := w.f.Close()
 	w.f = nil
+	w.mu.Unlock()
+	w.wg.Wait()
 	return err
 }

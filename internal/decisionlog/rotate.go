@@ -44,10 +44,13 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 }
 
 func (w *Writer) rotateLocked() error {
+	seg, err := nextSegmentName(w.path, w.opts.Now())
+	if err != nil {
+		return fmt.Errorf("decisionlog: choose segment name: %w", err)
+	}
 	if err := w.f.Close(); err != nil {
 		return fmt.Errorf("decisionlog: close before rotate: %w", err)
 	}
-	seg := segmentName(w.path, w.opts.Now())
 	if err := os.Rename(w.path, seg); err != nil {
 		if f, oerr := os.OpenFile(w.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); oerr == nil {
 			w.f = f

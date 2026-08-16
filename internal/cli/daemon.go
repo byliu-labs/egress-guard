@@ -30,9 +30,10 @@ import (
 
 // startFlags is the parsed public surface of `egress-guard start`.
 type startFlags struct {
-	port        int
-	system      bool
-	observeOnly bool
+	port                   int
+	system                 bool
+	observeOnly            bool
+	decisionLogMaxSegments int
 }
 
 func parseStartFlags(args []string) startFlags {
@@ -40,8 +41,13 @@ func parseStartFlags(args []string) startFlags {
 	port := fs.Int("port", defaultRedirectPort, "listen port")
 	system := fs.Bool("system", false, "boot-resident mode: reassert kernel rules at startup")
 	observe := fs.Bool("observe", false, "observe-only mode: log every decision but never enforce a block")
+	maxSegments := fs.Int("decision-log-max-segments", 0, "maximum rotated decision-log segments to retain; 0 keeps all")
 	fs.Parse(args)
-	return startFlags{port: *port, system: *system, observeOnly: *observe}
+	return startFlags{port: *port, system: *system, observeOnly: *observe, decisionLogMaxSegments: *maxSegments}
+}
+
+func decisionLogOptions(flags startFlags) decisionlog.Options {
+	return decisionlog.Options{MaxSegments: flags.decisionLogMaxSegments}
 }
 
 // Start runs the daemon in the foreground. v0.1: no daemonization;
@@ -81,7 +87,7 @@ func Start(args []string) error {
 		return fmt.Errorf("resolve state dir: %w", err)
 	}
 	logPath := filepath.Join(state, "blocked.log")
-	bl, err := decisionlog.Open(logPath)
+	bl, err := decisionlog.OpenWithOptions(logPath, decisionLogOptions(flags))
 	if err != nil {
 		return fmt.Errorf("open decision log: %w", err)
 	}

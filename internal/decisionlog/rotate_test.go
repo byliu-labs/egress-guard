@@ -74,6 +74,35 @@ func TestWriter_NoEntryLostAcrossRotation(t *testing.T) {
 	}
 }
 
+func TestWriter_SameSecondRotationsDoNotOverwriteHistory(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "blocked.log")
+	clock := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	w, err := OpenWithOptions(base, Options{
+		MaxBytes: 200,
+		Now:      func() time.Time { return clock },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const total = 400
+	for i := 0; i < total; i++ {
+		if err := w.Write(Entry{Decision: DecisionAllow, Host: "pypi.org"}); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadHistory(base)
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("recovered %d of %d entries -- same-second rotation overwrote a segment", len(got), total)
+	}
+}
+
 func TestOpen_DefaultsToRotationOnAndRetentionUnlimited(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "blocked.log")
 	w, err := Open(base)

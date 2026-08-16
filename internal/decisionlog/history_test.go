@@ -87,6 +87,30 @@ func TestReadHistory_MissingLiveFileWithSegmentsIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestReadHistory_SkipsCorruptRotatedSegment(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "blocked.log")
+	writeGzLines(t, base+".20260814T010000Z.gz", []string{"archived.example"})
+	if err := os.WriteFile(base+".20260815T010000Z.gz", []byte("not gzip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeLines(t, base, []string{"live.example"})
+
+	got, err := ReadHistory(base)
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	want := []string{"archived.example", "live.example"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Host != want[i] {
+			t.Fatalf("entry %d host = %q, want %q", i, got[i].Host, want[i])
+		}
+	}
+}
+
 func TestReadHistory_NothingOnDiskReportsNotExist(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "blocked.log")
 	_, err := ReadHistory(base)

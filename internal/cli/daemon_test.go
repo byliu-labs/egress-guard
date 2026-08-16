@@ -120,3 +120,17 @@ func TestStart_SystemFlagRequiresRoot(t *testing.T) {
 		t.Errorf("error %q should mention the root requirement", err)
 	}
 }
+
+func TestParseStartFlags_DecisionLogMaxSegments(t *testing.T) {
+	flags := parseStartFlags([]string{"--decision-log-max-segments", "7"})
+	if flags.decisionLogMaxSegments != 7 {
+		t.Fatalf("decisionLogMaxSegments = %d, want 7", flags.decisionLogMaxSegments)
+	}
+}
+
+func TestDecisionLogOptions_IncludesMaxSegments(t *testing.T) {
+	opts := decisionLogOptions(startFlags{decisionLogMaxSegments: 7})
+	if opts.MaxSegments != 7 {
+		t.Fatalf("MaxSegments = %d, want 7", opts.MaxSegments)
+	}
+}

@@ -3,39 +3,12 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"strings"
+
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 )
 
 func logFootprint(logPath string) (int, int64, error) {
-	var total int64
-	if fi, err := os.Stat(logPath); err == nil {
-		total += fi.Size()
-	} else if !os.IsNotExist(err) {
-		return 0, 0, err
-	}
-
-	matches, err := filepath.Glob(logPath + ".*")
-	if err != nil {
-		return 0, 0, err
-	}
-	segments := 0
-	for _, m := range matches {
-		if strings.HasSuffix(m, ".tmp") {
-			continue
-		}
-		fi, err := os.Stat(m)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return 0, 0, err
-		}
-		segments++
-		total += fi.Size()
-	}
-	return segments, total, nil
+	return decisionlog.Footprint(logPath)
 }
 
 func printLogFootprint(w io.Writer) {

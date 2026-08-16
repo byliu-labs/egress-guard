@@ -47,6 +47,35 @@ func TestFindSegments_OldestFirstAndPrefersGzip(t *testing.T) {
 	}
 }
 
+func TestFindSegments_OrdersSameSecondSequence(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "blocked.log")
+	for _, n := range []string{
+		"blocked.log.20260815T031422Z.000002.gz",
+		"blocked.log.20260815T031422Z",
+		"blocked.log.20260815T031422Z.000001.gz",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := findSegments(base)
+	if err != nil {
+		t.Fatalf("findSegments: %v", err)
+	}
+	want := []string{
+		filepath.Join(dir, "blocked.log.20260815T031422Z"),
+		filepath.Join(dir, "blocked.log.20260815T031422Z.000001.gz"),
+		filepath.Join(dir, "blocked.log.20260815T031422Z.000002.gz"),
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("findSegments[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestFindSegments_IgnoresForeignSuffixes(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "blocked.log")

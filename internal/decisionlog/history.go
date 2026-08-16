@@ -18,7 +18,7 @@ func ReadHistory(path string) ([]Entry, error) {
 	for _, seg := range segments {
 		entries, err := readSegment(seg)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		all = append(all, entries...)
 	}
