@@ -129,11 +129,7 @@ func TestServer_MalformedRequestIsLogged(t *testing.T) {
 }
 
 func TestServer_IdleRequestDeadlineLogsDeny(t *testing.T) {
-	oldDeadline := bridgeFrameDeadline
-	bridgeFrameDeadline = 20 * time.Millisecond
-	t.Cleanup(func() { bridgeFrameDeadline = oldDeadline })
-
-	server := newTestServer(t, false, StubResolver{})
+	server := newTestServerWithBinderAndDeadline(t, false, StubResolver{}, nil, 20*time.Millisecond)
 	connection, err := net.Dial("unix", server.path)
 	if err != nil {
 		t.Fatalf("dial server: %v", err)
@@ -330,6 +326,10 @@ func newTestServer(tb testing.TB, observeOnly bool, resolver IdentityResolver) t
 }
 
 func newTestServerWithBinder(tb testing.TB, observeOnly bool, resolver IdentityResolver, binder daemon.DestBinder) testServer {
+	return newTestServerWithBinderAndDeadline(tb, observeOnly, resolver, binder, 0)
+}
+
+func newTestServerWithBinderAndDeadline(tb testing.TB, observeOnly bool, resolver IdentityResolver, binder daemon.DestBinder, deadline time.Duration) testServer {
 	tb.Helper()
 
 	logPath := filepath.Join(tb.TempDir(), "decisions.log")
@@ -360,7 +360,9 @@ func newTestServerWithBinder(tb testing.TB, observeOnly bool, resolver IdentityR
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- (&Server{Decider: decider, Resolver: resolver, Log: log}).Serve(ctx, ln) }()
+	go func() {
+		serveDone <- (&Server{Decider: decider, Resolver: resolver, Log: log, FrameDeadline: deadline}).Serve(ctx, ln)
+	}()
 	tb.Cleanup(func() {
 		cancel()
 		_ = ln.Close()

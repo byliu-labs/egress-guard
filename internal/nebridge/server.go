@@ -25,12 +25,13 @@ type Decider interface {
 
 // Server turns one NEFilter request into one decision response.
 type Server struct {
-	Decider  Decider
-	Resolver IdentityResolver
-	Log      *decisionlog.Writer
+	Decider       Decider
+	Resolver      IdentityResolver
+	Log           *decisionlog.Writer
+	FrameDeadline time.Duration
 }
 
-var bridgeFrameDeadline = 5 * time.Second
+const defaultBridgeFrameDeadline = 5 * time.Second
 
 // Listen creates a Unix-domain listener in a private directory owned by this
 // process's effective user. It rejects pre-existing unsafe directories instead
@@ -132,7 +133,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(bridgeFrameDeadline)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(s.frameDeadline())); err != nil {
 			s.logDeny("", 0, "", "deadline_failed: "+err.Error())
 			return
 		}
@@ -216,7 +217,14 @@ func invalidDecisionReason(decision decisionlog.Decision) string {
 }
 
 func (s *Server) writeResponse(conn net.Conn, response Response) {
-	_ = conn.SetWriteDeadline(time.Now().Add(bridgeFrameDeadline))
+	_ = conn.SetWriteDeadline(time.Now().Add(s.frameDeadline()))
 	_ = EncodeResponse(conn, response)
 	_ = conn.SetWriteDeadline(time.Time{})
+}
+
+func (s *Server) frameDeadline() time.Duration {
+	if s.FrameDeadline > 0 {
+		return s.FrameDeadline
+	}
+	return defaultBridgeFrameDeadline
 }
