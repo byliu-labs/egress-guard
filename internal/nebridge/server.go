@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,7 +32,10 @@ type Server struct {
 	FrameDeadline time.Duration
 }
 
-const defaultBridgeFrameDeadline = 5 * time.Second
+const (
+	requestReadTimeout   = 5 * time.Second
+	responseWriteTimeout = 2 * time.Second
+)
 
 // Listen creates a Unix-domain listener in a private directory owned by this
 // process's effective user. It rejects pre-existing unsafe directories instead
@@ -107,6 +111,8 @@ func removeStaleSocket(socketPath string) error {
 // fails. Each connection carries one or more requests.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	done := make(chan struct{})
+	var handlers sync.WaitGroup
+	defer handlers.Wait()
 	defer close(done)
 	go func() {
 		select {
@@ -124,7 +130,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			}
 			return fmt.Errorf("nebridge: accept: %w", err)
 		}
-		go s.handleConn(conn)
+		handlers.Add(1)
+		go func() {
+			defer handlers.Done()
+			s.handleConn(conn)
+		}()
 	}
 }
 
@@ -133,7 +143,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(s.frameDeadline())); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(s.requestReadTimeout())); err != nil {
 			s.logDeny("", 0, "", "deadline_failed: "+err.Error())
 			return
 		}
@@ -229,14 +239,21 @@ func invalidDecisionReason(decision decisionlog.Decision) string {
 }
 
 func (s *Server) writeResponse(conn net.Conn, response Response) {
-	_ = conn.SetWriteDeadline(time.Now().Add(s.frameDeadline()))
+	_ = conn.SetWriteDeadline(time.Now().Add(s.responseWriteTimeout()))
 	_ = EncodeResponse(conn, response)
 	_ = conn.SetWriteDeadline(time.Time{})
 }
 
-func (s *Server) frameDeadline() time.Duration {
+func (s *Server) requestReadTimeout() time.Duration {
 	if s.FrameDeadline > 0 {
 		return s.FrameDeadline
 	}
-	return defaultBridgeFrameDeadline
+	return requestReadTimeout
+}
+
+func (s *Server) responseWriteTimeout() time.Duration {
+	if s.FrameDeadline > 0 {
+		return s.FrameDeadline
+	}
+	return responseWriteTimeout
 }
