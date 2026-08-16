@@ -2,6 +2,7 @@ package nebridge
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/daemon"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/kernel"
+	"github.com/byliu-labs/egress-guard/internal/procid"
+	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
 func TestServer_AllowlistedHostAllows(t *testing.T) {
@@ -57,6 +60,92 @@ func TestServer_ObserveMode_AllowsButLogsObserve(t *testing.T) {
 	}
 	if entry := server.onlyLogEntry(t); entry.Decision != decisionlog.DecisionObserve {
 		t.Fatalf("logged decision = %q, want observe", entry.Decision)
+	}
+}
+
+func TestServer_InvalidDecisionFailsClosed(t *testing.T) {
+	server := newTestServerWithDecider(t, entryDecider{
+		entry: decisionlog.Entry{Decision: "", Action: ""},
+	}, StubResolver{})
+
+	response := server.request(t, "allow.example", nil)
+
+	if response.Verdict != VerdictDrop {
+		t.Fatalf("Verdict = %v, want drop", response.Verdict)
+	}
+	if response.Reason != "invalid_decision: empty" {
+		t.Fatalf("Reason = %q, want invalid_decision: empty", response.Reason)
+	}
+	entry := server.onlyLogEntry(t)
+	if entry.Decision != decisionlog.DecisionDeny || entry.Action != string(decisionlog.DecisionDeny) {
+		t.Fatalf("logged decision/action = %q/%q, want deny/deny", entry.Decision, entry.Action)
+	}
+}
+
+func TestServer_UnknownDecisionFailsClosed(t *testing.T) {
+	server := newTestServerWithDecider(t, entryDecider{
+		entry: decisionlog.Entry{Decision: decisionlog.Decision("future")},
+	}, StubResolver{})
+
+	response := server.request(t, "allow.example", nil)
+
+	if response.Verdict != VerdictDrop {
+		t.Fatalf("Verdict = %v, want drop", response.Verdict)
+	}
+	if response.Reason != `invalid_decision: "future"` {
+		t.Fatalf("Reason = %q, want invalid future decision", response.Reason)
+	}
+}
+
+func TestServer_MalformedRequestIsLogged(t *testing.T) {
+	server := newTestServer(t, false, StubResolver{})
+	connection, err := net.Dial("unix", server.path)
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	if _, err := connection.Write(malformedRequestFrame(t)); err != nil {
+		t.Fatalf("write malformed request: %v", err)
+	}
+
+	response, err := DecodeResponse(connection)
+	if err != nil {
+		t.Fatalf("decode malformed response: %v", err)
+	}
+	if response.Verdict != VerdictDrop {
+		t.Fatalf("Verdict = %v, want drop", response.Verdict)
+	}
+	if !strings.HasPrefix(response.Reason, "malformed_request:") {
+		t.Fatalf("Reason = %q, want malformed_request prefix", response.Reason)
+	}
+	_ = connection.Close()
+
+	entry := server.waitForOnlyLogEntry(t)
+	if entry.Decision != decisionlog.DecisionDeny {
+		t.Fatalf("logged decision = %q, want deny", entry.Decision)
+	}
+	if !strings.HasPrefix(entry.Reason, "malformed_request:") {
+		t.Fatalf("Reason = %q, want malformed_request prefix", entry.Reason)
+	}
+}
+
+func TestServer_IdleRequestDeadlineLogsDeny(t *testing.T) {
+	oldDeadline := bridgeFrameDeadline
+	bridgeFrameDeadline = 20 * time.Millisecond
+	t.Cleanup(func() { bridgeFrameDeadline = oldDeadline })
+
+	server := newTestServer(t, false, StubResolver{})
+	connection, err := net.Dial("unix", server.path)
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	defer connection.Close()
+
+	entry := server.waitForOnlyLogEntry(t)
+	if entry.Decision != decisionlog.DecisionDeny {
+		t.Fatalf("logged decision = %q, want deny", entry.Decision)
+	}
+	if !strings.Contains(entry.Reason, "i/o timeout") {
+		t.Fatalf("Reason = %q, want timeout", entry.Reason)
 	}
 }
 
@@ -283,6 +372,43 @@ func newTestServerWithBinder(tb testing.TB, observeOnly bool, resolver IdentityR
 	return testServer{path: path, logPath: logPath}
 }
 
+func newTestServerWithDecider(tb testing.TB, decider Decider, resolver IdentityResolver) testServer {
+	tb.Helper()
+
+	logPath := filepath.Join(tb.TempDir(), "decisions.log")
+	log, err := decisionlog.Open(logPath)
+	if err != nil {
+		tb.Fatalf("open decision log: %v", err)
+	}
+	tb.Cleanup(func() { _ = log.Close() })
+
+	path := testSocketPath(tb)
+	ln, err := Listen(path)
+	if err != nil {
+		tb.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- (&Server{Decider: decider, Resolver: resolver, Log: log}).Serve(ctx, ln) }()
+	tb.Cleanup(func() {
+		cancel()
+		_ = ln.Close()
+		if err := <-serveDone; err != nil {
+			tb.Errorf("Serve: %v", err)
+		}
+	})
+
+	return testServer{path: path, logPath: logPath}
+}
+
+type entryDecider struct {
+	entry decisionlog.Entry
+}
+
+func (d entryDecider) Decide(string, net.IP, procid.ProcInfo, signature.SignedIdentity) decisionlog.Entry {
+	return d.entry
+}
+
 func testSocketPath(tb testing.TB) string {
 	tb.Helper()
 
@@ -339,6 +465,17 @@ func (s testServer) onlyLogEntry(t *testing.T) decisionlog.Entry {
 	return entries[0]
 }
 
+func (s testServer) waitForOnlyLogEntry(t *testing.T) decisionlog.Entry {
+	t.Helper()
+	var entries []decisionlog.Entry
+	waitFor(t, func() bool {
+		var err error
+		entries, err = decisionlog.Read(s.logPath)
+		return err == nil && len(entries) == 1
+	})
+	return entries[0]
+}
+
 func clientHelloForHost(host string) []byte {
 	body := make([]byte, 0, 128)
 	body = append(body, 0x03, 0x03)
@@ -355,4 +492,32 @@ func clientHelloForHost(host string) []byte {
 
 	handshake := append([]byte{0x01, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
 	return append([]byte{0x16, 0x03, 0x01, byte(len(handshake) >> 8), byte(len(handshake))}, handshake...)
+}
+
+func malformedRequestFrame(t *testing.T) []byte {
+	t.Helper()
+	var frame []byte
+	frame = append(frame, 99)
+	frame = append(frame, make([]byte, net.IPv6len)...)
+	var port [2]byte
+	binary.BigEndian.PutUint16(port[:], 443)
+	frame = append(frame, port[:]...)
+	frame = append(frame, make([]byte, 32)...)
+	frame = append(frame, 0, 0)
+	if len(frame) != requestHeaderLen {
+		t.Fatalf("malformed request header length = %d, want %d", len(frame), requestHeaderLen)
+	}
+	return frame
+}
+
+func waitFor(t *testing.T, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met within 2s")
 }

@@ -23,7 +23,7 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
-const defaultSocket = "/tmp/egress-guard-nefilter/nebridge.sock"
+const defaultSocketName = "nebridge.sock"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -36,18 +36,23 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("nebridge-proto", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	socketPath := flags.String("socket", defaultSocket, "Unix socket path")
 	allowlistPath := flags.String("allowlist", "", "allowlist TOML path")
 	logPath := flags.String("log", defaultLogPath, "decision log path")
 	observeOnly := flags.Bool("observe", false, "log decisions without enforcing drops")
-	testStubIdentity := flags.Bool("test-stub-identity", false, "")
+	testStubIdentity := flags.Bool("test-stub-identity", false, "use deterministic process identity resolver (tests only)")
 	flags.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: nebridge-proto -allowlist <path> [flags]")
 		fmt.Fprintln(os.Stderr, "  -socket <path>")
 		fmt.Fprintf(os.Stderr, "  -log <path> (default %s)\n", defaultLogPath)
 		fmt.Fprintln(os.Stderr, "  -observe")
+		fmt.Fprintln(os.Stderr, "  -test-stub-identity (tests only)")
 	}
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -117,6 +122,14 @@ func defaultDecisionLogPath() (string, error) {
 		return "", fmt.Errorf("nebridge-proto: resolve user cache directory: %w", err)
 	}
 	return filepath.Join(cacheDir, "egress-guard", "nebridge-decisions.log"), nil
+}
+
+func defaultSocketPath() (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("nebridge-proto: resolve user cache directory: %w", err)
+	}
+	return filepath.Join(cacheDir, "egress-guard", defaultSocketName), nil
 }
 
 func loadLayeredCatalog() (*catalog.Catalog, error) {

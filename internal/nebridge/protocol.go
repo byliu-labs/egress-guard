@@ -33,6 +33,7 @@ type Verdict uint8
 const (
 	VerdictAllow Verdict = 0
 	VerdictDrop  Verdict = 1
+	VerdictAsk   Verdict = 2
 )
 
 // Response is the daemon's decision for a bridge request.
@@ -164,7 +165,7 @@ func DecodeResponse(r io.Reader) (Response, error) {
 }
 
 func (v Verdict) valid() bool {
-	return v == VerdictAllow || v == VerdictDrop
+	return v == VerdictAllow || v == VerdictDrop || v == VerdictAsk
 }
 
 func writeAll(w io.Writer, data []byte) error {

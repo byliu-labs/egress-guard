@@ -20,14 +20,10 @@ func TestBridgeSNIParity(t *testing.T) {
 	for _, host := range hosts {
 		t.Run(host, func(t *testing.T) {
 			clientHello := tlsparse.BuildClientHelloForTest(host, true)
-			want, err := tlsparse.ParseSNI(clientHello)
-			if err != nil {
-				t.Fatalf("ParseSNI: %v", err)
-			}
 
 			response := server.request(t, "", clientHello)
-			if response.Host != want {
-				t.Fatalf("Response.Host = %q, want %q", response.Host, want)
+			if response.Host != host {
+				t.Fatalf("Response.Host = %q, want %q", response.Host, host)
 			}
 			if response.Verdict != VerdictAllow {
 				t.Fatalf("Verdict = %v, want allow", response.Verdict)

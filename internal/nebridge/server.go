@@ -2,11 +2,14 @@ package nebridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/procid"
@@ -26,6 +29,8 @@ type Server struct {
 	Resolver IdentityResolver
 	Log      *decisionlog.Writer
 }
+
+var bridgeFrameDeadline = 5 * time.Second
 
 // Listen creates a Unix-domain listener in a private directory owned by this
 // process's effective user. It rejects pre-existing unsafe directories instead
@@ -127,10 +132,21 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		req, err := DecodeRequest(conn)
-		if err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(bridgeFrameDeadline)); err != nil {
+			s.logDeny("", 0, "", "deadline_failed: "+err.Error())
 			return
 		}
+		req, err := DecodeRequest(conn)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			reason := "malformed_request: " + err.Error()
+			s.logDeny("", 0, "", reason)
+			s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
+			return
+		}
+		_ = conn.SetReadDeadline(time.Time{})
 		host, err := tlsparse.ParseSNI(req.ClientHello)
 		if err != nil {
 			s.drop(conn, "", req, "sni_parse_failed: "+err.Error())
@@ -145,13 +161,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		entry := s.Decider.Decide(host, req.DstIP, pi, sig)
 		entry.DestIP = req.DstIP.String()
 		entry.DestPort = req.DstPort
+		response, entry := responseForEntry(host, entry)
 		_ = s.Log.Write(entry)
-
-		verdict := VerdictAllow
-		if entry.Decision == decisionlog.DecisionDeny {
-			verdict = VerdictDrop
-		}
-		_ = EncodeResponse(conn, Response{Verdict: verdict, Host: host, Reason: entry.Reason})
+		s.writeResponse(conn, response)
 	}
 }
 
@@ -165,5 +177,46 @@ func (s *Server) drop(conn net.Conn, host string, req Request, reason string) {
 		DestPort: req.DstPort,
 	}
 	_ = s.Log.Write(entry)
-	_ = EncodeResponse(conn, Response{Verdict: VerdictDrop, Host: host, Reason: reason})
+	s.writeResponse(conn, Response{Verdict: VerdictDrop, Host: host, Reason: reason})
+}
+
+func (s *Server) logDeny(destIP string, destPort int, host, reason string) {
+	_ = s.Log.Write(decisionlog.Entry{
+		Decision: decisionlog.DecisionDeny,
+		Action:   string(decisionlog.DecisionDeny),
+		Reason:   reason,
+		Host:     host,
+		DestIP:   destIP,
+		DestPort: destPort,
+	})
+}
+
+func responseForEntry(host string, entry decisionlog.Entry) (Response, decisionlog.Entry) {
+	switch entry.Decision {
+	case decisionlog.DecisionAllow, decisionlog.DecisionObserve:
+		return Response{Verdict: VerdictAllow, Host: host, Reason: entry.Reason}, entry
+	case decisionlog.DecisionDeny:
+		return Response{Verdict: VerdictDrop, Host: host, Reason: entry.Reason}, entry
+	case decisionlog.DecisionAsk:
+		return Response{Verdict: VerdictAsk, Host: host, Reason: entry.Reason}, entry
+	default:
+		reason := invalidDecisionReason(entry.Decision)
+		entry.Decision = decisionlog.DecisionDeny
+		entry.Action = string(decisionlog.DecisionDeny)
+		entry.Reason = reason
+		return Response{Verdict: VerdictDrop, Host: host, Reason: reason}, entry
+	}
+}
+
+func invalidDecisionReason(decision decisionlog.Decision) string {
+	if decision == "" {
+		return "invalid_decision: empty"
+	}
+	return fmt.Sprintf("invalid_decision: %q", decision)
+}
+
+func (s *Server) writeResponse(conn net.Conn, response Response) {
+	_ = conn.SetWriteDeadline(time.Now().Add(bridgeFrameDeadline))
+	_ = EncodeResponse(conn, response)
+	_ = conn.SetWriteDeadline(time.Time{})
 }

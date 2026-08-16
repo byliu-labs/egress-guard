@@ -63,8 +63,18 @@ func TestNebridgeProto_BinderDropsMismatchAndDNSFailure(t *testing.T) {
 }
 
 func TestNebridgeProto_DefaultSocketUsesPrivateDirectory(t *testing.T) {
-	if filepath.Dir(defaultSocket) == "/tmp" {
-		t.Fatalf("default socket %q is directly in shared temporary directory /tmp", defaultSocket)
+	t.Setenv("HOME", t.TempDir())
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		t.Fatalf("defaultSocketPath: %v", err)
+	}
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir: %v", err)
+	}
+	want := filepath.Join(cacheDir, "egress-guard", defaultSocketName)
+	if defaultSocket != want {
+		t.Fatalf("default socket = %q, want %q", defaultSocket, want)
 	}
 	root := shortSocketDir(t)
 	socketPath := filepath.Join(root, filepath.Base(filepath.Dir(defaultSocket)), filepath.Base(defaultSocket))
