@@ -22,7 +22,11 @@ func Read(path string) ([]Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decisionlog: read %s: %w", path, err)
 	}
-	trimmed := strings.TrimRight(string(b), "\n")
+	return parseEntries(string(b), path)
+}
+
+func parseEntries(text, path string) ([]Entry, error) {
+	trimmed := strings.TrimRight(text, "\n")
 	if trimmed == "" {
 		return nil, nil
 	}
