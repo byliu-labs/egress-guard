@@ -9,6 +9,8 @@ import (
 )
 
 func TestAttribute_NonPersistentKindSkipsLedger(t *testing.T) {
+	requireCommand(t, "ps", "-axo", "pid=,ppid=,comm=")
+
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	src, err := Attribute(procid.ProcInfo{PID: 1, PPID: 1})

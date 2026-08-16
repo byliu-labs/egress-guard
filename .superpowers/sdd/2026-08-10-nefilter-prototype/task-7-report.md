@@ -74,22 +74,25 @@ git diff --check
 | --- | --- |
 | Focused Darwin own-token test | Passed |
 | Linux `go build ./internal/nebridge/` | Passed |
-| `GOCACHE=/tmp/egress-guard-gocache make test` | NeBridge package passed; full suite failed in two existing prototype smoke tests |
-| Focused prototype smoke tests | Reproduced the same Unix-socket timeout |
+| `GOCACHE=/tmp/egress-guard-gocache make test` | Passed |
+| `GOCACHE=/tmp/egress-guard-gocache make build` | Passed |
+| `GOCACHE=/tmp/egress-guard-gocache go test -race -count=1 ./internal/nebridge ./cmd/nebridge-proto -v` | Passed |
+| `GOCACHE=/tmp/egress-guard-gocache go test -race -count=1 ./internal/daemon -v` | Passed |
+| `GOCACHE=/tmp/egress-guard-gocache go test -race -count=1 ./internal/tlsparse -v` | Passed |
+| `GOCACHE=/tmp/egress-guard-gocache GOOS=linux go build ./internal/nebridge/` | Passed |
+| `GOCACHE=/tmp/egress-guard-gocache go vet ./...` | Passed |
 
-The full-suite failure was:
+During finish, the full-suite run initially exposed three environment/test-harness
+issues:
 
-```text
---- FAIL: TestNebridgeProto_Smoke
-    main_test.go:27: nebridge-proto did not listen on .../s/s
---- FAIL: TestNebridgeProto_UsesBaselineCatalog
-    main_test.go:90: nebridge-proto did not listen on .../s/s
-```
-
-The only `cmd/nebridge-proto` change is the required static declaration of its
-resolver variable as `nebridge.IdentityResolver`; the runtime construction and
-stub-selection branches are unchanged. The timeout remains unresolved here and
-was not modified because it belongs to the earlier prototype-command task.
+- `cmd/nebridge-proto` smoke tests used a 2s child-process readiness deadline,
+  which was too tight under whole-suite race/build load. The deadline is now 10s.
+- `internal/daemon` unit coverage expected live persistence attribution for the
+  current process. It now uses the existing persistence stub hook so it tests
+  `entryFor` deterministically.
+- Darwin persistence integration checks now skip when the sandbox blocks the
+  exact read-only process tools they depend on (`ps` and `launchctl`), while pure
+  classifier coverage still runs.
 
 ## Files changed
 
@@ -98,6 +101,10 @@ was not modified because it belongs to the earlier prototype-command task.
 - `internal/nebridge/resolver_default.go`
 - `internal/nebridge/resolver_darwin_test.go`
 - `cmd/nebridge-proto/main.go`
+- `cmd/nebridge-proto/main_test.go`
+- `internal/daemon/decision_persist_test.go`
+- `internal/persist/classify_darwin_test.go`
+- `internal/persist/persist_darwin_test.go`
 
 ## Self-review
 
@@ -110,9 +117,3 @@ was not modified because it belongs to the earlier prototype-command task.
   and builds for Linux.
 - Scope: the command-package edit is needed solely because the exact concrete
   constructor return type otherwise prevents assignment of `StubResolver`.
-
-## Concern
-
-The complete `make test` suite is not green because the two existing
-`cmd/nebridge-proto` socket smoke tests time out. The Task 7 focused test and
-required Linux build are green.

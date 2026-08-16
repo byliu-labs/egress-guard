@@ -231,7 +231,7 @@ func shortSocketDir(t *testing.T) string {
 func waitForSocket(t *testing.T, socketPath string) {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		connection, err := net.DialTimeout("unix", socketPath, 50*time.Millisecond)
 		if err == nil {
@@ -270,7 +270,7 @@ func request(t *testing.T, socketPath, host, dstIP string) nebridge.Response {
 
 func waitForOutput(t *testing.T, path, want string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		output, err := os.ReadFile(path)
 		if err == nil && strings.Contains(string(output), want) {

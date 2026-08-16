@@ -4,11 +4,21 @@ package persist
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
 
+func requireCommand(t *testing.T, name string, args ...string) {
+	t.Helper()
+	if err := exec.Command(name, args...).Run(); err != nil {
+		t.Skipf("%s unavailable in this test environment: %v", name, err)
+	}
+}
+
 func TestAncestorChain_IncludesSelf(t *testing.T) {
+	requireCommand(t, "ps", "-axo", "pid=,ppid=,comm=")
+
 	chain, err := ancestorChain(os.Getpid(), os.Getppid())
 	if err != nil {
 		t.Fatalf("ancestorChain: %v", err)
@@ -23,6 +33,8 @@ func TestAncestorChain_IncludesSelf(t *testing.T) {
 }
 
 func TestAncestorChain_BoundedDepth(t *testing.T) {
+	requireCommand(t, "ps", "-axo", "pid=,ppid=,comm=")
+
 	chain, err := ancestorChain(os.Getpid(), os.Getppid())
 	if err != nil {
 		t.Fatalf("ancestorChain: %v", err)
@@ -33,6 +45,8 @@ func TestAncestorChain_BoundedDepth(t *testing.T) {
 }
 
 func TestLaunchdPIDLabels_NoError(t *testing.T) {
+	requireCommand(t, "launchctl", "list")
+
 	labels, err := launchdPIDLabels()
 	if err != nil {
 		t.Fatalf("launchdPIDLabels: %v", err)
