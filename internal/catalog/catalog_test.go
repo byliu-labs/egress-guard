@@ -46,6 +46,28 @@ func TestLoad_AcceptsWellFormedEntry(t *testing.T) {
 	}
 }
 
+func TestLoadAndMarshal_RoundTripIssuedAt(t *testing.T) {
+	withStamp := "issued_at = \"2026-08-16T00:00:00Z\"\n" + validEntryTOML
+	c, err := Load([]byte(withStamp))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := c.IssuedAt(); got != "2026-08-16T00:00:00Z" {
+		t.Fatalf("IssuedAt = %q", got)
+	}
+	b, err := c.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	reloaded, err := Load(b)
+	if err != nil {
+		t.Fatalf("reload marshaled catalog: %v\n%s", err, b)
+	}
+	if got := reloaded.IssuedAt(); got != "2026-08-16T00:00:00Z" {
+		t.Fatalf("reloaded IssuedAt = %q", got)
+	}
+}
+
 func TestLoad_RejectsMissingEvidence(t *testing.T) {
 	toml := `
 [[entry]]

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -38,6 +43,27 @@ func TestRun_RefreshUsesKnownGoodFragments(t *testing.T) {
 	}
 }
 
+func TestRun_BuildReusesIssuedAtWhenOutputIsUnchanged(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "catalog-baseline.toml")
+	if err := run([]string{"build", "--baseline", "../../catalog/baseline", "--out", out}); err != nil {
+		t.Fatalf("first build: %v", err)
+	}
+	first, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read first output: %v", err)
+	}
+	if err := run([]string{"build", "--baseline", "../../catalog/baseline", "--out", out}); err != nil {
+		t.Fatalf("second build: %v", err)
+	}
+	second, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read second output: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("unchanged fragments produced byte-different output")
+	}
+}
+
 func TestRun_EmbedExemptWritesFile(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "defaults_embedded.toml")
 	if err := run([]string{"embed-exempt", "--exempt", "../../catalog/exempt", "--out", out}); err != nil {
@@ -55,27 +81,22 @@ func TestRun_EmbedExemptWritesFile(t *testing.T) {
 	}
 }
 
-func TestRun_KeygenAndSignProduceVerifiableArtifact(t *testing.T) {
+func TestRun_SignWithKeyFileProducesVerifiableArtifact(t *testing.T) {
 	dir := t.TempDir()
-	pubPath := filepath.Join(dir, "catalog.pub")
-	privPath := filepath.Join(dir, "catalog.priv")
-	if err := run([]string{"keygen", "--pub-out", pubPath, "--priv-out", privPath}); err != nil {
-		t.Fatalf("run keygen: %v", err)
-	}
-	info, err := os.Stat(privPath)
-	if err != nil {
-		t.Fatalf("stat private key: %v", err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("private key permissions = %o, want 600", info.Mode().Perm())
-	}
-
 	catalogPath := filepath.Join(dir, "catalog-baseline.toml")
 	if err := run([]string{"build", "--baseline", "../../catalog/baseline", "--out", catalogPath}); err != nil {
 		t.Fatalf("run build: %v", err)
 	}
+	pub, priv, err := catalogsig.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyPath := filepath.Join(dir, "catalog-signing.key")
+	if err := os.WriteFile(keyPath, []byte(base64.StdEncoding.EncodeToString(priv)), 0o600); err != nil {
+		t.Fatalf("write signing key: %v", err)
+	}
 	sigPath := filepath.Join(dir, "catalog-baseline.toml.sig")
-	if err := run([]string{"sign", "--catalog", catalogPath, "--private-key", privPath, "--sig-out", sigPath}); err != nil {
+	if err := run([]string{"sign", "--in", catalogPath, "--key", keyPath}); err != nil {
 		t.Fatalf("run sign: %v", err)
 	}
 
@@ -83,16 +104,100 @@ func TestRun_KeygenAndSignProduceVerifiableArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read catalog: %v", err)
 	}
-	sig, err := os.ReadFile(sigPath)
+	sig, err := os.ReadFile(catalogPath + ".sig")
 	if err != nil {
 		t.Fatalf("read signature: %v", err)
 	}
-	pub, err := os.ReadFile(pubPath)
+	if err := catalogsig.Verify(data, sig, pub); err != nil {
+		t.Fatalf("signature does not verify: %v", err)
+	}
+
+	if _, err := os.Stat(sigPath); err != nil {
+		t.Fatalf("expected default signature path %s: %v", sigPath, err)
+	}
+}
+
+func TestRun_SignWithEnvKeyProducesVerifiableArtifact(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "catalog-baseline.toml")
+	data := []byte("[[entry]]\nexe_basename = \"git\"\n")
+	if err := os.WriteFile(in, data, 0o644); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	pub, priv, err := catalogsig.GenerateKey()
 	if err != nil {
-		t.Fatalf("read public key: %v", err)
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	t.Setenv("CATALOG_SIGNING_KEY", base64.StdEncoding.EncodeToString(priv))
+
+	if err := run([]string{"sign", "--in", in}); err != nil {
+		t.Fatalf("run sign: %v", err)
+	}
+
+	sig, err := os.ReadFile(in + ".sig")
+	if err != nil {
+		t.Fatalf("read signature: %v", err)
 	}
 	if err := catalogsig.Verify(data, sig, pub); err != nil {
 		t.Fatalf("signature does not verify: %v", err)
+	}
+}
+
+func TestRun_SignRejectsMissingKey(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "catalog-baseline.toml")
+	if err := os.WriteFile(in, []byte("[[entry]]\nexe_basename = \"git\"\n"), 0o644); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	t.Setenv("CATALOG_SIGNING_KEY", "")
+	if err := run([]string{"sign", "--in", in}); err == nil {
+		t.Fatal("sign succeeded with no key; signing must not silently no-op")
+	}
+}
+
+func TestRun_GenKeyRequiresPrivateKeyOutput(t *testing.T) {
+	err := run([]string{"genkey"})
+	if err == nil {
+		t.Fatal("genkey without --key-out should fail instead of printing private material")
+	}
+	if !strings.Contains(err.Error(), "--key-out") {
+		t.Fatalf("error should name --key-out: %v", err)
+	}
+}
+
+func TestRun_GenKeyWritesPrivateKeyToFileAndDoesNotPrintIt(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "catalog-signing.key")
+	var err error
+	stdout := captureStdout(t, func() {
+		err = run([]string{"genkey", "--key-out", keyPath})
+	})
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	raw, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read generated private key: %v", err)
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat generated private key: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("private key permissions = %o, want 0600", got)
+	}
+	encodedPrivate := strings.TrimSpace(string(raw))
+	priv, err := base64.StdEncoding.DecodeString(encodedPrivate)
+	if err != nil {
+		t.Fatalf("generated private key is not base64: %v", err)
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		t.Fatalf("private key length = %d, want %d", len(priv), ed25519.PrivateKeySize)
+	}
+	if strings.Contains(stdout, encodedPrivate) {
+		t.Fatal("genkey printed the private signing key to stdout")
+	}
+	if !strings.Contains(stdout, "maintainerPubHex") {
+		t.Fatalf("genkey output should tell maintainers which embedded public key to rotate:\n%s", stdout)
 	}
 }
 
@@ -100,4 +205,26 @@ func TestRun_UnknownSubcommand(t *testing.T) {
 	if err := run([]string{"frobnicate"}); err == nil {
 		t.Error("expected error for unknown subcommand")
 	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout pipe: %v", err)
+	}
+	return string(out)
 }

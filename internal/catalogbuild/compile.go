@@ -8,10 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
 	"github.com/byliu-labs/egress-guard/internal/exempt"
 )
+
+var compileNow = func() time.Time { return time.Now().UTC() }
 
 // LoadBaselineDir reads every *.toml fragment in dir in sorted order and
 // merges the validated fragments into a single catalog.
@@ -63,6 +66,9 @@ func CompileExempt(dir string) ([]byte, error) {
 // CompileBaseline serializes an assembled known-good catalog and asserts that
 // the bytes round-trip through catalog.Load before returning them.
 func CompileBaseline(c *catalog.Catalog) ([]byte, error) {
+	if c.IssuedAt() == "" {
+		c.SetIssuedAt(compileNow().UTC().Format(time.RFC3339))
+	}
 	b, err := c.Marshal()
 	if err != nil {
 		return nil, fmt.Errorf("catalogbuild: marshal baseline: %w", err)

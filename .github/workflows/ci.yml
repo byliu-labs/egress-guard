@@ -24,3 +24,17 @@ jobs:
         run: GOOS=linux go build ./internal/nebridge/
       - name: Vet
         run: go vet ./...
+
+  catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: Catalog artifact matches its fragments
+        run: |
+          cp catalog-baseline.toml /tmp/expected.toml
+          go run ./cmd/catalog-build build --out /tmp/expected.toml
+          diff -u catalog-baseline.toml /tmp/expected.toml

@@ -67,6 +67,10 @@ func SystemBlockLogPath() string {
 	return filepath.Join(systemStateHome, ".local", "state", "egress-guard", "blocked.log")
 }
 
+func systemBaselineCatalogPath() (string, error) {
+	return filepath.Join(systemStateHome, ".config", "egress-guard", "catalog-baseline.toml"), nil
+}
+
 func renderLaunchDaemonPlist(binPath string, port int, state string) string {
 	return strings.NewReplacer(
 		"{{LABEL}}", launchDaemonLabel,

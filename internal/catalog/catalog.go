@@ -53,13 +53,15 @@ type Entry struct {
 }
 
 type fileSchema struct {
-	Entry []Entry `toml:"entry"`
+	IssuedAt string  `toml:"issued_at,omitempty"`
+	Entry    []Entry `toml:"entry"`
 }
 
 // Catalog is a loaded, validated set of entries.
 type Catalog struct {
-	mu      sync.RWMutex
-	entries []Entry
+	mu       sync.RWMutex
+	issuedAt string
+	entries  []Entry
 }
 
 // LayerFile identifies one named catalog layer to load at startup.
@@ -91,7 +93,7 @@ func Load(b []byte) (*Catalog, error) {
 		}
 		entries = append(entries, e)
 	}
-	return &Catalog{entries: entries}, nil
+	return &Catalog{issuedAt: f.IssuedAt, entries: entries}, nil
 }
 
 // LoadFile parses a catalog TOML file from disk. Missing files pass through as
@@ -169,6 +171,9 @@ func (c *Catalog) Merge(other *Catalog) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = append(c.entries, entries...)
+	if len(entries) > 0 {
+		c.issuedAt = ""
+	}
 }
 
 // Lookup matches id and host against catalog facts. Name-only entries can
@@ -227,6 +232,22 @@ func (c *Catalog) EntryCount() int {
 	return len(c.entries)
 }
 
+// IssuedAt is when this catalog artifact was compiled (RFC 3339 UTC), or ""
+// for catalogs that predate signed distribution metadata.
+func (c *Catalog) IssuedAt() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.issuedAt
+}
+
+// SetIssuedAt sets the compiled artifact timestamp. Entry mutators clear it,
+// so stale timestamps cannot survive catalog changes.
+func (c *Catalog) SetIssuedAt(issuedAt string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.issuedAt = issuedAt
+}
+
 // Add validates e and appends it to the catalog.
 func (c *Catalog) Add(e Entry) error {
 	if err := validateEntry(e); err != nil {
@@ -235,6 +256,7 @@ func (c *Catalog) Add(e Entry) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = append(c.entries, cloneEntry(e))
+	c.issuedAt = ""
 	return nil
 }
 
@@ -252,17 +274,19 @@ func (c *Catalog) AddIfAbsent(e Entry) (bool, error) {
 		}
 	}
 	c.entries = append(c.entries, cloneEntry(e))
+	c.issuedAt = ""
 	return true, nil
 }
 
 // Marshal serializes the catalog to TOML, round-trippable through Load.
 func (c *Catalog) Marshal() ([]byte, error) {
 	c.mu.RLock()
+	issuedAt := c.issuedAt
 	entries := append([]Entry(nil), c.entries...)
 	c.mu.RUnlock()
 
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(fileSchema{Entry: entries}); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(fileSchema{IssuedAt: issuedAt, Entry: entries}); err != nil {
 		return nil, fmt.Errorf("catalog: marshal: %w", err)
 	}
 	return buf.Bytes(), nil
