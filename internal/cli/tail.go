@@ -1,15 +1,21 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/tail"
 )
 
@@ -41,6 +47,82 @@ func Tail(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	f := &tail.Follower{Path: path, Out: os.Stdout}
+	f := &tail.Follower{Path: path, Out: newDecisionLogLineRenderer(os.Stdout)}
 	return f.Follow(ctx)
+}
+
+type decisionLogLineRenderer struct {
+	out     io.Writer
+	pending []byte
+}
+
+func newDecisionLogLineRenderer(out io.Writer) io.Writer {
+	return &decisionLogLineRenderer{out: out}
+}
+
+func (r *decisionLogLineRenderer) Write(p []byte) (int, error) {
+	r.pending = append(r.pending, p...)
+	for {
+		i := bytes.IndexByte(r.pending, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		line := strings.TrimSpace(string(r.pending[:i]))
+		r.pending = r.pending[i+1:]
+		if line == "" {
+			continue
+		}
+		if _, err := fmt.Fprintln(r.out, renderLogLine(line)); err != nil {
+			return 0, err
+		}
+	}
+}
+
+func renderLogLine(line string) string {
+	var e decisionlog.Entry
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return line
+	}
+	return renderEntry(e)
+}
+
+func renderEntry(e decisionlog.Entry) string {
+	exe := filepath.Base(e.Exe)
+	if exe == "." || exe == "" {
+		exe = "-"
+	}
+	host := e.Host
+	if host == "" {
+		host = "-"
+	}
+	if e.IsFlow() {
+		return fmt.Sprintf("%s  flow   %-24s %-32s up=%s down=%s duration=%s",
+			e.Timestamp, exe, host, humanBytes(e.BytesUp), humanBytes(e.BytesDown),
+			time.Duration(e.DurationMS)*time.Millisecond)
+	}
+	action := e.Action
+	if action == "" {
+		action = string(e.Decision)
+	}
+	if action == "" {
+		action = "-"
+	}
+	if e.Reason != "" {
+		return fmt.Sprintf("%s  %-6s %-24s %-32s %s", e.Timestamp, action, exe, host, e.Reason)
+	}
+	return fmt.Sprintf("%s  %-6s %-24s %s", e.Timestamp, action, exe, host)
+}
+
+// humanBytes renders a byte count compactly for one-line log output.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1fK", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }

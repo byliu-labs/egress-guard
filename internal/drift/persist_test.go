@@ -98,6 +98,31 @@ func TestIsStaleDetectsNewerEntries(t *testing.T) {
 	}
 }
 
+func TestIsStaleIgnoresEntriesBuildBaselineIgnores(t *testing.T) {
+	b := buildLearnedBaseline(t, nil)
+	ignored := []decisionlog.Entry{
+		{
+			Timestamp: time.Date(2026, 6, 3, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+			Kind:      decisionlog.KindFlow,
+			Decision:  decisionlog.DecisionAllow,
+			Exe:       "/Applications/Slack.app/MacOS/Slack",
+			TeamID:    "TEAMSLACK",
+			Host:      "slack.com",
+			ConnID:    "0123456789abcdef",
+		},
+		{
+			Timestamp: time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+			Decision:  decisionlog.DecisionDeny,
+			Exe:       "/Applications/Slack.app/MacOS/Slack",
+			TeamID:    "TEAMSLACK",
+			Host:      "slack.com",
+		},
+	}
+	if b.IsStale(ignored) {
+		t.Fatal("IsStale reported stale from entries BuildBaseline would ignore")
+	}
+}
+
 func TestLoadBaselineMissingFileIsNotExist(t *testing.T) {
 	_, err := LoadBaseline(filepath.Join(t.TempDir(), "nope.json"), nil)
 	if !errors.Is(err, os.ErrNotExist) {

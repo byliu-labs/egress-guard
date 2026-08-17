@@ -96,7 +96,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 	var latest time.Time
 
 	for _, e := range entries {
-		if e.Decision == decisionlog.DecisionDeny {
+		if !foldsIntoBaseline(e) {
 			continue
 		}
 		id := identityKey(identityFromEntry(e))
@@ -125,6 +125,10 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 	}
 	b.builtThrough = latest
 	return b
+}
+
+func foldsIntoBaseline(e decisionlog.Entry) bool {
+	return !e.IsFlow() && e.Decision != decisionlog.DecisionDeny
 }
 
 // Classify scores one decision-log entry against the baseline. It ignores the
@@ -207,6 +211,9 @@ func (b *Baseline) BuiltThrough() time.Time {
 // IsStale reports whether entries contain traffic newer than this baseline.
 func (b *Baseline) IsStale(entries []decisionlog.Entry) bool {
 	for _, e := range entries {
+		if !foldsIntoBaseline(e) {
+			continue
+		}
 		ts, err := time.Parse(time.RFC3339, e.Timestamp)
 		if err == nil && ts.After(b.builtThrough) {
 			return true

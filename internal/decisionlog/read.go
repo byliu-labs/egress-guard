@@ -53,6 +53,9 @@ func ReadFilter(path string, f Filter) ([]Entry, error) {
 	}
 	out := make([]Entry, 0, len(all))
 	for _, e := range all {
+		if e.IsFlow() {
+			continue
+		}
 		if f.Host != "" && e.Host != f.Host {
 			continue
 		}
