@@ -107,12 +107,44 @@ func LoadFile(path string) (*Catalog, error) {
 	return Load(b)
 }
 
+// LoadLayer parses a catalog file for a specific source layer. Entry.Layer is
+// data, but the source file owns layer semantics; a baseline file cannot
+// self-declare user authority.
+func LoadLayer(b []byte, layerName string) (*Catalog, error) {
+	if !validLayers[layerName] {
+		return nil, fmt.Errorf("catalog: invalid source layer %q", layerName)
+	}
+	c, err := Load(b)
+	if err != nil {
+		return nil, err
+	}
+	for i, e := range c.entries {
+		if e.Layer != layerName {
+			return nil, fmt.Errorf("entry %d declares layer %q in %s layer file", i, e.Layer, layerName)
+		}
+	}
+	return c, nil
+}
+
+// LoadLayerFile parses a catalog file and verifies every entry declares the
+// same layer as the source file being loaded.
+func LoadLayerFile(layerName, path string) (*Catalog, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, os.ErrNotExist
+	}
+	if err != nil {
+		return nil, fmt.Errorf("catalog: read %s: %w", path, err)
+	}
+	return LoadLayer(b, layerName)
+}
+
 // LoadLayers merges the supplied catalog layers in order. Missing files are
 // empty layers; malformed or unreadable files prevent startup.
 func LoadLayers(layers ...LayerFile) (*Catalog, error) {
 	live := &Catalog{}
 	for _, layer := range layers {
-		loaded, err := LoadFile(layer.Path)
+		loaded, err := LoadLayerFile(layer.Name, layer.Path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -139,9 +171,8 @@ func (c *Catalog) Merge(other *Catalog) {
 	c.entries = append(c.entries, entries...)
 }
 
-// Lookup matches id and host against catalog facts. Name-only baseline/pro
-// entries can explain a prompt, but only user-ratified entries or pinned
-// entries can decide without asking.
+// Lookup matches id and host against catalog facts. Name-only entries can
+// explain a prompt, but only pinned entries can decide without asking.
 func (c *Catalog) Lookup(id Identity, host string) MatchResult {
 	nh := normalizeHost(host)
 	var expected MatchResult
@@ -240,7 +271,7 @@ func identityDescribes(entryID, queryID Identity) bool {
 }
 
 func entryCanDecide(e Entry) bool {
-	return e.Layer == "user" || hasDecisionPin(e.Identity)
+	return hasDecisionPin(e.Identity)
 }
 
 func hasDecisionPin(id Identity) bool {

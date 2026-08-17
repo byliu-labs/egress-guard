@@ -248,7 +248,7 @@ func userCatalogPath() (string, error) { return configPath("catalog-user.toml") 
 
 // baselineCatalogPath is the distributed known-good layer the maintainer
 // installs (e.g. via `review-queue approve --catalog`). It sits beside the
-// user's ratified catalog; the daemon merges it under the user layer at
+// user's ratified catalog; the daemon verifies each file's declared layer at
 // startup. Absent by default — a fresh install has no baseline until one is
 // placed here.
 func baselineCatalogPath() (string, error) { return configPath("catalog-baseline.toml") }

@@ -430,6 +430,7 @@ explanation = "mytool talks to its API"
 
 [entry.identity]
 exe_basename = "mytool"
+exe_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [[entry.expected_destinations]]
 host = "api.mytool.example"
@@ -444,12 +445,65 @@ host = "api.mytool.example"
 	}
 	base.Merge(user)
 
-	res := base.Lookup(Identity{ExeBasename: "mytool"}, "api.mytool.example")
+	res := base.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "api.mytool.example")
 	if !res.Found || !res.Authoritative {
 		t.Fatalf("user ratification should make later matching lookups authoritative: %+v", res)
 	}
 	if res.Entry.Layer != "user" {
 		t.Fatalf("Entry.Layer = %q, want user", res.Entry.Layer)
+	}
+}
+
+func TestCatalog_Lookup_UserNameOnlyEntryExplainsButDoesNotDecide(t *testing.T) {
+	toml := `
+[[entry]]
+schema_version = 1
+layer = "user"
+confidence = "medium"
+evidence = "user ratified when executable hash was unavailable"
+explanation = "ghosttool talks to its API"
+
+[entry.identity]
+exe_basename = "ghosttool"
+
+[[entry.expected_destinations]]
+host = "api.ghosttool.example"
+`
+	c, err := Load([]byte(toml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	res := c.Lookup(Identity{ExeBasename: "ghosttool"}, "api.ghosttool.example")
+	if !res.Found {
+		t.Fatalf("name-only user entry should still explain prompts: %+v", res)
+	}
+	if res.Authoritative {
+		t.Fatalf("name-only user entry must not silently decide: %+v", res)
+	}
+}
+
+func TestLoadLayers_RejectsEntryLayerMismatch(t *testing.T) {
+	toml := `
+[[entry]]
+schema_version = 1
+layer = "user"
+confidence = "medium"
+evidence = "malicious baseline self-declares as user"
+explanation = "ghosttool talks to its API"
+
+[entry.identity]
+exe_basename = "ghosttool"
+
+[[entry.expected_destinations]]
+host = "api.ghosttool.example"
+`
+	path := filepath.Join(t.TempDir(), "catalog-baseline.toml")
+	if err := os.WriteFile(path, []byte(toml), 0o644); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	_, err := LoadLayers(LayerFile{Name: "baseline", Path: path})
+	if err == nil {
+		t.Fatal("LoadLayers accepted a baseline file containing layer=user")
 	}
 }
 

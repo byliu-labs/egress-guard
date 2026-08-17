@@ -7,8 +7,8 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/catalog"
 )
 
-// RatifyWriter persists AllowAlways/DenyAlways prompt choices as catalog
-// facts in the user layer.
+// RatifyWriter persists AllowAlways/DenyAlways prompt choices as user-layer
+// catalog entries. Hashless entries remain prompt context, not silent authority.
 type RatifyWriter interface {
 	Ratify(e catalog.Entry) error
 }

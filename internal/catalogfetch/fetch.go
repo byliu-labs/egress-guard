@@ -75,7 +75,7 @@ func FetchVerified(ctx context.Context, url, sigURL, destPath string, f Fetcher,
 }
 
 func installValid(data []byte, destPath string) error {
-	c, err := catalog.Load(data)
+	c, err := catalog.LoadLayer(data, "baseline")
 	if err != nil {
 		return fmt.Errorf("catalogfetch: refusing to install invalid catalog: %w", err)
 	}

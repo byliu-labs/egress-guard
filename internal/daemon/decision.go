@@ -52,7 +52,15 @@ func entryFor(decision decisionlog.Decision, reason, host string, pi procid.Proc
 }
 
 func entryForWithoutPersistence(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
-	return decisionlog.Entry{
+	return entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, true)
+}
+
+func entryForWithoutPersistenceNoHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
+	return entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, false)
+}
+
+func entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier, includeHash bool) decisionlog.Entry {
+	entry := decisionlog.Entry{
 		Decision:  decision,
 		Action:    string(decision),
 		Reason:    reason,
@@ -65,10 +73,13 @@ func entryForWithoutPersistence(decision decisionlog.Decision, reason, host stri
 		Argv:      pi.Argv,
 		Cwd:       pi.Cwd,
 		PName:     pi.PComm,
-		ExeSHA256: exeSHA256(pi.Exe),
 		TeamID:    sig.TeamID,
 		SigValid:  sig.Valid,
 	}
+	if includeHash {
+		entry.ExeSHA256 = exeSHA256(pi.Exe)
+	}
+	return entry
 }
 
 type persistenceKey struct {
@@ -117,7 +128,7 @@ func attributePersistence(pi procid.ProcInfo) *persist.Source {
 // is robust if the fast-path ever gets refactored.
 func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionOutcome, decisionlog.Entry) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
-		return outcomeExempt, entryForWithoutPersistence(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
+		return outcomeExempt, entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
 	}
 	switch d.opts.Allow.Decide(host) {
 	case allowlist.Allow:
@@ -187,7 +198,7 @@ func exeSHA256(path string) string {
 	if err != nil {
 		return ""
 	}
-	key := path + "\x00" + info.ModTime().UTC().Format(time.RFC3339Nano) + "\x00" + itoa64(info.Size())
+	key := executableCacheKey(path, info)
 
 	exeHashMu.Lock()
 	if elem, ok := exeHashIndex[key]; ok {
@@ -247,8 +258,8 @@ func hashExecutableFile(path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func itoa64(n int64) string {
-	return strconv.FormatInt(n, 10)
+func baseExecutableCacheKey(path string, info os.FileInfo) string {
+	return path + "\x00mtime=" + info.ModTime().UTC().Format(time.RFC3339Nano) + "\x00size=" + strconv.FormatInt(info.Size(), 10)
 }
 
 func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) drift.Event {
@@ -323,12 +334,12 @@ func (d *Daemon) handle(conn net.Conn) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
 		upstream, err := net.Dial("tcp", net.JoinHostPort(dstIP.String(), itoa(dstPort)))
 		if err != nil {
-			entry := entryForWithoutPersistence(decisionlog.DecisionDeny, "exempt_upstream_dial_failed: "+err.Error(), "", pi, sig, "")
+			entry := entryForWithoutPersistenceNoHash(decisionlog.DecisionDeny, "exempt_upstream_dial_failed: "+err.Error(), "", pi, sig, "")
 			entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 			_ = d.opts.Log.Write(entry)
 			return
 		}
-		entry := entryForWithoutPersistence(decisionlog.DecisionAllow, "exempt_app", "", pi, sig, "")
+		entry := entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", "", pi, sig, "")
 		entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 		_ = d.opts.Log.Write(entry)
 		conn.SetReadDeadline(timeZero())

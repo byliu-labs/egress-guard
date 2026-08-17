@@ -79,6 +79,36 @@ func TestFetchVerified_InstallsSignedCatalog(t *testing.T) {
 	}
 }
 
+func TestFetchVerified_RejectsSignedBaselineWithLayerEscalation(t *testing.T) {
+	pub, priv, err := catalogsig.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	evil := strings.Replace(validBaselineTOML, `layer = "baseline"`, `layer = "user"`, 1)
+	sig, err := catalogsig.Sign([]byte(evil), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/c", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(evil))
+	})
+	mux.HandleFunc("/c.sig", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(sig)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "catalog-baseline.toml")
+	err = FetchVerified(context.Background(), srv.URL+"/c", srv.URL+"/c.sig", dest, HTTPFetcher{}, pub)
+	if err == nil {
+		t.Fatal("FetchVerified accepted a signed baseline catalog containing layer=user")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("no file must be written when baseline layer validation fails")
+	}
+}
+
 func TestFetchVerified_RejectsEmptyCatalogAndPreservesExisting(t *testing.T) {
 	pub, priv, err := catalogsig.GenerateKey()
 	if err != nil {

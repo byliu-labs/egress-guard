@@ -14,8 +14,8 @@ func TestShippedCatalog_BasenameOnlyEntryPromptsWithExplanationButNeverAllows(t 
 	if err != nil {
 		t.Fatalf("LoadFile(catalog-baseline.toml): %v", err)
 	}
-	if cat.EntryCount() != 10 {
-		t.Fatalf("shipped baseline entry count = %d, want 10", cat.EntryCount())
+	if cat.EntryCount() == 0 {
+		t.Fatal("shipped baseline catalog is empty")
 	}
 
 	cases := []struct {

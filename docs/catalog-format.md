@@ -13,9 +13,8 @@ the bar below before merge.
 
 An allowlist says "reach this host." A catalog entry says more: "this specific,
 verified process identity legitimately reaches this host, and here is why."
-That distinction matters because a pinned or user-ratified catalog entry is a
-fact the daemon can act on silently, while an unpinned public entry can only
-explain the prompt.
+That distinction matters because a pinned catalog entry is a fact the daemon
+can act on silently, while an unpinned entry can only explain the prompt.
 
 A catalog fact is deterministic and evidence-backed. A model opinion from a
 future explainer is advisory and cannot become a catalog fact without a human
@@ -76,10 +75,11 @@ The loader still accepts name-only `medium` entries so prompts can carry human
 curated explanations for common tools. `Lookup` therefore reports two separate
 facts: whether an entry was found for prompt context, and whether that entry is
 authoritative enough to decide without asking. Confidence is descriptive
-provenance, not a decision gate. The daemon's trust boundary for public catalog
-allows is a signed catalog artifact plus an explicit destination list plus an
-identity pin. The local `user` layer is different: it records an explicit user
-ratification and may decide silently on later matching connections.
+provenance, not a decision gate. The daemon's trust boundary for catalog allows
+is a signed catalog artifact plus an explicit destination list plus an identity
+pin. The local `user` layer records explicit user ratifications, but a hashless
+ratification is still prompt context only; uncertainty must not become silent
+authority.
 
 ## Match Rules
 

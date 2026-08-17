@@ -60,7 +60,7 @@ type Event struct {
 
 const minStableDays = 2
 
-const baselineSchemaVersion = 1
+const baselineSchemaVersion = 2
 
 const (
 	rankNeverHit         = 4
@@ -157,7 +157,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 			ev.Rank = rankNeverHit
 			return ev
 		}
-		if match.Found {
+		if match.Found && match.Authoritative {
 			ev.Class = ClassKnown
 			return ev
 		}

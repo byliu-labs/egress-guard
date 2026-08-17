@@ -44,8 +44,9 @@ type Options struct {
 	// original, spoofable behavior).
 	Binder DestBinder
 
-	// Catalog is consulted before prompting: expected destinations allow
-	// silently and Never hits deny silently.
+	// Catalog is consulted before prompting: authoritative expected
+	// destinations allow silently, prompt-only matches explain the prompt, and
+	// Never hits deny silently.
 	Catalog *catalog.Catalog
 
 	// Baseline enriches prompt requests with the drift reason. Nil keeps
