@@ -22,6 +22,7 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/exempt"
 	"github.com/byliu-labs/egress-guard/internal/explain"
 	"github.com/byliu-labs/egress-guard/internal/kernel"
+	"github.com/byliu-labs/egress-guard/internal/pending"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/prompt"
 	"github.com/byliu-labs/egress-guard/internal/signature"
@@ -126,6 +127,14 @@ func Start(args []string) error {
 	if err != nil {
 		return err
 	}
+	pendingPath, err := configPath("pending-reviews.jsonl")
+	if err != nil {
+		return fmt.Errorf("resolve pending review path: %w", err)
+	}
+	pendingStore, err := pending.Open(pendingPath)
+	if err != nil {
+		return err
+	}
 
 	baselineCache, err := baselineCachePath()
 	if err != nil {
@@ -164,6 +173,7 @@ func Start(args []string) error {
 		Baseline:    startupBaseline,
 		Explainer:   explainer,
 		Logger:      stdLogger{},
+		Pending:     pendingStore,
 		ObserveOnly: flags.observeOnly,
 	})
 	if err != nil {

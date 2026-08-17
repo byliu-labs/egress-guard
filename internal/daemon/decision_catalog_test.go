@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -144,11 +145,15 @@ func TestDecideBranch_ExeSHA256BaselineAllowsMatchingBinary(t *testing.T) {
 	if err := os.WriteFile(exePath, exeBytes, 0o755); err != nil {
 		t.Fatalf("write executable fixture: %v", err)
 	}
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		t.Fatalf("resolve executable fixture: %v", err)
+	}
 	sum := sha256.Sum256(exeBytes)
 	pi := procid.ProcInfo{PID: 14, Exe: exePath, Comm: "git"}
 	if err := cat.Add(catalog.Entry{
 		SchemaVersion:        catalog.CurrentSchemaVersion,
-		Identity:             catalog.Identity{ExeBasename: "git", ExeSHA256: hex.EncodeToString(sum[:])},
+		Identity:             catalog.Identity{ExeBasename: "git", ExePath: realPath, ExeSHA256: hex.EncodeToString(sum[:])},
 		ExpectedDestinations: []catalog.Destination{{Host: "github.com", Why: "test fixture"}},
 		Explanation:          "this pinned git binary talks to GitHub",
 		Evidence:             "test fixture sha256",
@@ -168,6 +173,69 @@ func TestDecideBranch_ExeSHA256BaselineAllowsMatchingBinary(t *testing.T) {
 	}
 	if entry.ExeSHA256 != hex.EncodeToString(sum[:]) {
 		t.Errorf("entry.ExeSHA256 = %q, want fixture hash", entry.ExeSHA256)
+	}
+}
+
+func TestDecideBranch_SameInodeRewriteDoesNotUseStaleHashForCatalogFact(t *testing.T) {
+	cat := &catalog.Catalog{}
+	dir := t.TempDir()
+	exePath := filepath.Join(dir, "pinnedtool")
+	exeBytes := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err := os.WriteFile(exePath, exeBytes, 0o755); err != nil {
+		t.Fatalf("write executable fixture: %v", err)
+	}
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		t.Fatalf("resolve executable fixture: %v", err)
+	}
+	sum := sha256.Sum256(exeBytes)
+	if err := cat.Add(catalog.Entry{
+		SchemaVersion:        catalog.CurrentSchemaVersion,
+		Identity:             catalog.Identity{ExeBasename: "pinnedtool", ExePath: realPath, ExeSHA256: hex.EncodeToString(sum[:])},
+		ExpectedDestinations: []catalog.Destination{{Host: "pypi.org", Why: "test fixture"}},
+		Explanation:          "this pinned tool talks to PyPI",
+		Evidence:             "test fixture sha256",
+		Confidence:           catalog.ConfidenceMedium,
+		Layer:                "user",
+	}); err != nil {
+		t.Fatalf("cat.Add: %v", err)
+	}
+	fi, err := os.Stat(exePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mtime := fi.ModTime()
+
+	d := newDaemonForBranchWithCatalog(t, nil, cat)
+	pi := procid.ProcInfo{PID: 15, Exe: exePath, Comm: "pinnedtool"}
+	if outcome, entry := d.decideBranch("pypi.org", nil, pi, signature.SignedIdentity{}); outcome != outcomeAllow || entry.Reason != "catalog_fact" {
+		t.Fatalf("first decision: outcome=%v entry=%+v, want catalog_fact allow", outcome, entry)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	f, err := os.OpenFile(exePath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), 0); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(exePath, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &recordingPending{}
+	d.opts.Pending = rec
+	outcome, entry := d.decideBranch("pypi.org", nil, pi, signature.SignedIdentity{})
+	if outcome == outcomeAllow && entry.TrustTier == decisionlog.TierCatalogFact {
+		t.Fatalf("same-inode rewrite was allowed as stale catalog fact: %+v", entry)
+	}
+	if len(rec.items) != 1 {
+		t.Fatalf("pending items = %d, want changed binary queued for review", len(rec.items))
 	}
 }
 

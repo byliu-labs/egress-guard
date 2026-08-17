@@ -5,6 +5,7 @@ package menubar
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ type menu struct {
 	status     *systray.MenuItem
 	recent     []*systray.MenuItem
 	allowLast  *systray.MenuItem
+	review     *systray.MenuItem
 	pause      *systray.MenuItem
 	resume     *systray.MenuItem
 	startLogin *systray.MenuItem
@@ -79,6 +81,9 @@ func onReady() {
 	systray.AddSeparator()
 	m.allowLast = systray.AddMenuItem("Allow last blocked host", "Add the newest blocked host to the allowlist")
 	m.allowLast.Disable()
+	m.review = systray.AddMenuItem("Review updated binaries", "Open pending binary review")
+	m.review.Disable()
+	m.review.Hide()
 	systray.AddSeparator()
 	m.pause = systray.AddMenuItem("Pause protection", "Flush the pf anchor")
 	m.resume = systray.AddMenuItem("Resume protection", "Reinstall the pf anchor")
@@ -119,6 +124,14 @@ func (m *menu) refresh() {
 	systray.SetTitle(title)
 	systray.SetTooltip(tip)
 	m.status.SetTitle(StatusLine(r))
+	if r.PendingReviews > 0 {
+		m.review.SetTitle("Review updated binaries (" + strconv.Itoa(r.PendingReviews) + ")")
+		m.review.Enable()
+		m.review.Show()
+	} else {
+		m.review.Disable()
+		m.review.Hide()
+	}
 
 	blocks, _ := RecentBlocks(recentSlots)
 	for i, it := range m.recent {
@@ -152,6 +165,8 @@ func (m *menu) wireClicks(mUninstall, mQuit *systray.MenuItem) {
 				if host := m.getLastHost(); host != "" {
 					_ = AllowHost(host)
 				}
+			case <-m.review.ClickedCh:
+				_ = execFn(installedBinPath, "review")
 			case <-m.pause.ClickedCh:
 				_ = RunAdmin(PauseScript())
 			case <-m.resume.ClickedCh:

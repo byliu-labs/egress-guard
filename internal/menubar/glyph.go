@@ -16,6 +16,10 @@ func Glyph(r cli.StatusReport) (title, tooltip string) {
 	case r.TUNIface != "":
 		return "⚠️", fmt.Sprintf("Bypassed: %s owns the default route; egress-guard enforces nothing", r.TUNIface)
 	case r.AgentLoaded && r.DaemonPID > 0:
+		if r.PendingReviews > 0 {
+			return fmt.Sprintf("🛡️%d", r.PendingReviews),
+				fmt.Sprintf("Protected: daemon running; %d updated binaries awaiting review", r.PendingReviews)
+		}
 		return "🛡️", "Protected: daemon running"
 	case r.AgentLoaded:
 		return "⚠️", "Daemon restarting"
