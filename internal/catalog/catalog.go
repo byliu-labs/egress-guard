@@ -234,8 +234,25 @@ func (c *Catalog) Add(e Entry) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries = append(c.entries, e)
+	c.entries = append(c.entries, cloneEntry(e))
 	return nil
+}
+
+// AddIfAbsent validates e and appends it only when the same identity has not
+// already ratified the same allow/deny destinations.
+func (c *Catalog) AddIfAbsent(e Entry) (bool, error) {
+	if err := validateEntry(e); err != nil {
+		return false, fmt.Errorf("catalog: add: %w", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, existing := range c.entries {
+		if sameIdentityAndDestinations(existing, e) {
+			return false, nil
+		}
+	}
+	c.entries = append(c.entries, cloneEntry(e))
+	return true, nil
 }
 
 // Marshal serializes the catalog to TOML, round-trippable through Load.
@@ -271,11 +288,55 @@ func identityDescribes(entryID, queryID Identity) bool {
 }
 
 func entryCanDecide(e Entry) bool {
-	return hasDecisionPin(e.Identity)
+	return HasDecisionPin(e.Identity)
 }
 
-func hasDecisionPin(id Identity) bool {
+func HasDecisionPin(id Identity) bool {
 	return id.ExeSHA256 != "" || id.TeamID != "" || id.BundleID != ""
+}
+
+func sameIdentityAndDestinations(a, b Entry) bool {
+	return a.Identity == b.Identity &&
+		sameExpectedDestinations(a.ExpectedDestinations, b.ExpectedDestinations) &&
+		sameHosts(a.Never, b.Never)
+}
+
+func cloneEntry(e Entry) Entry {
+	e.ExpectedDestinations = append([]Destination(nil), e.ExpectedDestinations...)
+	e.Never = append([]string(nil), e.Never...)
+	return e
+}
+
+func sameExpectedDestinations(a, b []Destination) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ah := make(map[string]bool, len(a))
+	for _, d := range a {
+		ah[normalizeHost(d.Host)] = true
+	}
+	for _, d := range b {
+		if !ah[normalizeHost(d.Host)] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameHosts(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ah := make(map[string]bool, len(a))
+	for _, h := range a {
+		ah[normalizeHost(h)] = true
+	}
+	for _, h := range b {
+		if !ah[normalizeHost(h)] {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeHost(h string) string {

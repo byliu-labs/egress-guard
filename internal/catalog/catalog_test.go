@@ -564,6 +564,83 @@ func TestCatalog_Add_RejectsInvalidEntry(t *testing.T) {
 	}
 }
 
+func TestCatalog_AddIfAbsent_DeduplicatesIdentityAndNormalizedDestination(t *testing.T) {
+	c := &Catalog{}
+	entry := Entry{
+		SchemaVersion:        CurrentSchemaVersion,
+		Layer:                "user",
+		Confidence:           ConfidenceMedium,
+		Evidence:             "user ratified after a drift prompt",
+		Explanation:          "context-only ratification",
+		Identity:             Identity{ExeBasename: "ghosttool"},
+		ExpectedDestinations: []Destination{{Host: "API.GHOSTTOOL.EXAMPLE."}},
+	}
+	added, err := c.AddIfAbsent(entry)
+	if err != nil || !added {
+		t.Fatalf("AddIfAbsent first = added %v err %v, want added nil", added, err)
+	}
+	entry.Evidence = "same choice ratified again"
+	entry.Explanation = "same destination with different prose"
+	entry.ExpectedDestinations[0].Host = "api.ghosttool.example"
+	added, err = c.AddIfAbsent(entry)
+	if err != nil {
+		t.Fatalf("AddIfAbsent duplicate: %v", err)
+	}
+	if added {
+		t.Fatal("AddIfAbsent added duplicate identity+destination")
+	}
+	if got := c.EntryCount(); got != 1 {
+		t.Fatalf("EntryCount = %d, want 1", got)
+	}
+}
+
+func TestCatalog_AddIfAbsent_AllowsSameIdentityDifferentDestination(t *testing.T) {
+	c := &Catalog{}
+	entry := Entry{
+		SchemaVersion:        CurrentSchemaVersion,
+		Layer:                "user",
+		Confidence:           ConfidenceMedium,
+		Evidence:             "user ratified after a drift prompt",
+		Explanation:          "first destination",
+		Identity:             Identity{ExeBasename: "ghosttool"},
+		ExpectedDestinations: []Destination{{Host: "api.ghosttool.example"}},
+	}
+	if added, err := c.AddIfAbsent(entry); err != nil || !added {
+		t.Fatalf("AddIfAbsent first = added %v err %v, want added nil", added, err)
+	}
+	entry.Explanation = "second destination"
+	entry.ExpectedDestinations[0].Host = "metrics.ghosttool.example"
+	if added, err := c.AddIfAbsent(entry); err != nil || !added {
+		t.Fatalf("AddIfAbsent different destination = added %v err %v, want added nil", added, err)
+	}
+	if got := c.EntryCount(); got != 2 {
+		t.Fatalf("EntryCount = %d, want 2", got)
+	}
+}
+
+func TestCatalog_AddIfAbsent_DeduplicatesNeverDestination(t *testing.T) {
+	c := &Catalog{}
+	entry := Entry{
+		SchemaVersion: CurrentSchemaVersion,
+		Layer:         "user",
+		Confidence:    ConfidenceMedium,
+		Evidence:      "user denied after a drift prompt",
+		Explanation:   "deny ratification",
+		Identity:      Identity{ExeBasename: "ghosttool"},
+		Never:         []string{"BLOCK.GHOSTTOOL.EXAMPLE."},
+	}
+	if added, err := c.AddIfAbsent(entry); err != nil || !added {
+		t.Fatalf("AddIfAbsent first = added %v err %v, want added nil", added, err)
+	}
+	entry.Never[0] = "block.ghosttool.example"
+	if added, err := c.AddIfAbsent(entry); err != nil || added {
+		t.Fatalf("AddIfAbsent duplicate never = added %v err %v, want false nil", added, err)
+	}
+	if got := c.EntryCount(); got != 1 {
+		t.Fatalf("EntryCount = %d, want 1", got)
+	}
+}
+
 func TestCatalog_MarshalRoundTrip(t *testing.T) {
 	c := &Catalog{}
 	e := Entry{

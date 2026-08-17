@@ -94,6 +94,22 @@ func TestCatalogEntryFor_UnsignedIdentityUsesMediumConfidence(t *testing.T) {
 	}
 }
 
+func TestCatalogEntryFor_HashlessAllowAlwaysLabelsContextOnly(t *testing.T) {
+	req := Request{
+		Host:   "api.ghosttool.example",
+		Proc:   procid.ProcInfo{Comm: "ghosttool"},
+		RegDom: "ghosttool.example",
+		Drift:  drift.Event{Identity: catalog.Identity{ExeBasename: "ghosttool"}},
+	}
+	e := catalogEntryFor(req, true)
+	if !contains(e.Explanation, "context-only") {
+		t.Fatalf("Explanation = %q, want context-only label", e.Explanation)
+	}
+	if contains(e.Explanation, "is allowed to reach") {
+		t.Fatalf("Explanation = %q, must not present hashless allow as durable authorization", e.Explanation)
+	}
+}
+
 type recordingRatifyWriter struct {
 	calls int
 	lastE catalog.Entry
@@ -125,6 +141,31 @@ func TestDecide_AllowAlwaysWithRatifyWriter_SkipsLegacyAlwaysWriter(t *testing.T
 	}
 	if legacy.allowCalls != 0 {
 		t.Errorf("legacy AlwaysWriter.AddAllow calls = %d, want 0", legacy.allowCalls)
+	}
+}
+
+func TestDecide_HashlessAllowAlwaysLogsContextOnlyRatification(t *testing.T) {
+	logger := &recordingLogger{}
+	rw := &recordingRatifyWriter{}
+	d := New(Options{Notifier: &StaticNotifier{A: ActionAllowAlways}, RatifyWriter: rw, Logger: logger})
+	got := d.Decide(context.Background(), Request{
+		Proc:   procid.ProcInfo{Comm: "ghosttool"},
+		Host:   "api.ghosttool.example",
+		RegDom: "ghosttool.example",
+		Drift:  drift.Event{Identity: catalog.Identity{ExeBasename: "ghosttool"}},
+	})
+	if got != Allow {
+		t.Fatalf("Decide() = %v, want Allow for this prompted connection", got)
+	}
+	if rw.calls != 1 {
+		t.Fatalf("RatifyWriter.Ratify calls = %d, want 1", rw.calls)
+	}
+	msgs := logger.snapshot()
+	if len(msgs) != 1 {
+		t.Fatalf("Logger.Errorf calls = %d, want 1 (%v)", len(msgs), msgs)
+	}
+	if !contains(msgs[0], "context-only") || !contains(msgs[0], "without identity pin") {
+		t.Fatalf("logged %q, want context-only warning without identity pin", msgs[0])
 	}
 }
 

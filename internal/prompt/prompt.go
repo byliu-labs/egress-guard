@@ -144,8 +144,14 @@ func (c *CoreDecider) persist(a Action, req Request) {
 func (c *CoreDecider) persistAlways(req Request, allow bool) {
 	if c.opts.RatifyWriter != nil {
 		entry := catalogEntryFor(req, allow)
-		if err := c.opts.RatifyWriter.Ratify(entry); err != nil && c.opts.Logger != nil {
-			c.opts.Logger.Errorf("prompt: Ratify(%q, allow=%v) failed: %v", req.RegDom, allow, err)
+		if err := c.opts.RatifyWriter.Ratify(entry); err != nil {
+			if c.opts.Logger != nil {
+				c.opts.Logger.Errorf("prompt: Ratify(%q, allow=%v) failed: %v", req.RegDom, allow, err)
+			}
+			return
+		}
+		if allow && !catalog.HasDecisionPin(entry.Identity) && c.opts.Logger != nil {
+			c.opts.Logger.Errorf("prompt: Ratify(%q, allow=true) stored context-only entry without identity pin; future connections still require prompt", req.RegDom)
 		}
 		return
 	}

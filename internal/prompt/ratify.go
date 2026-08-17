@@ -24,7 +24,11 @@ func catalogEntryFor(req Request, allow bool) catalog.Entry {
 	}
 	if allow {
 		e.ExpectedDestinations = []catalog.Destination{{Host: host, Why: "user-ratified allow via drift prompt"}}
-		e.Explanation = fmt.Sprintf("%s is allowed to reach %s (ratified by user)", req.Proc.Comm, host)
+		if catalog.HasDecisionPin(e.Identity) {
+			e.Explanation = fmt.Sprintf("%s is allowed to reach %s (ratified by user)", req.Proc.Comm, host)
+		} else {
+			e.Explanation = fmt.Sprintf("%s was allowed once to reach %s, but no executable identity pin was available; this entry is context-only", req.Proc.Comm, host)
+		}
 	} else {
 		e.Never = []string{host}
 		e.Explanation = fmt.Sprintf("%s must never reach %s (ratified by user)", req.Proc.Comm, host)

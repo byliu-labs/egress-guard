@@ -39,26 +39,12 @@ func (f *Follower) Follow(ctx context.Context) error {
 		return errors.New("tail: Out is nil")
 	}
 
-	var fp *os.File
-	defer func() {
-		if fp != nil {
-			fp.Close()
-		}
-	}()
-
-	// Snapshot pre-existing content before installing the watcher so a file
-	// created after this point is drained from byte 0, not mistaken for old
-	// history and skipped by seek-to-end.
-	if existing, err := openAndSeekEnd(f.Path); err == nil {
-		fp = existing
-		if err := drain(fp, f.Out); err != nil {
-			return err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	dir := filepath.Dir(f.Path)
+	initiallyExists, err := fileExists(f.Path)
+	if err != nil {
 		return err
 	}
 
-	dir := filepath.Dir(f.Path)
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("tail: new watcher: %w", err)
@@ -71,10 +57,33 @@ func (f *Follower) Follow(ctx context.Context) error {
 	if err := w.Add(dir); err != nil {
 		return fmt.Errorf("tail: watch %s: %w", dir, err)
 	}
-	if next, err := syncPath(f.Path, fp, f.Out); err != nil {
-		return err
-	} else {
-		fp = next
+
+	var fp *os.File
+	defer func() {
+		if fp != nil {
+			fp.Close()
+		}
+	}()
+
+	// Existing startup content is historical and should not be echoed.
+	// If the file did not exist when Follow was called, bytes in the first
+	// file that appears are new even if creation races watcher setup.
+	if initiallyExists {
+		existing, err := openAndSeekEnd(f.Path)
+		if errors.Is(err, os.ErrNotExist) {
+			initiallyExists = false
+		} else if err != nil {
+			return err
+		} else {
+			fp = existing
+		}
+	}
+	if !initiallyExists {
+		existing, err := openAndDrain(f.Path, f.Out)
+		if err != nil {
+			return err
+		}
+		fp = existing
 	}
 
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -105,35 +114,26 @@ func (f *Follower) Follow(ctx context.Context) error {
 				fp = nil
 			}
 			if ev.Op&fsnotify.Create != 0 {
-				if fp != nil {
-					fp.Close()
-				}
-				newFp, err := os.Open(f.Path)
+				next, err := syncPath(f.Path, fp, f.Out)
 				if err != nil {
-					return fmt.Errorf("tail: reopen %s: %w", f.Path, err)
-				}
-				// Don't seek: a freshly-rotated file starts at 0, and we
-				// want every byte written to it.
-				fp = newFp
-				if err := drain(fp, f.Out); err != nil {
 					return err
 				}
+				fp = next
 			}
 			if ev.Op&fsnotify.Write != 0 {
 				if fp == nil {
 					// Some filesystems coalesce or drop Create around
 					// rotation; a later Write is still enough to reopen.
-					newFp, err := os.Open(f.Path)
-					if errors.Is(err, os.ErrNotExist) {
-						continue
-					}
+					next, err := openAndDrain(f.Path, f.Out)
 					if err != nil {
-						return fmt.Errorf("tail: reopen %s: %w", f.Path, err)
+						return err
 					}
-					fp = newFp
+					fp = next
 				}
-				if err := drain(fp, f.Out); err != nil {
-					return err
+				if fp != nil {
+					if err := drain(fp, f.Out); err != nil {
+						return err
+					}
 				}
 			}
 		case err, ok := <-w.Errors:
@@ -143,6 +143,17 @@ func (f *Follower) Follow(ctx context.Context) error {
 			return fmt.Errorf("tail: watcher error: %w", err)
 		}
 	}
+}
+
+func fileExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("tail: stat %s: %w", path, err)
+	}
+	return true, nil
 }
 
 // drain copies everything from the file's current offset to the writer.
@@ -196,6 +207,15 @@ func openAndDrain(path string, out io.Writer) (*os.File, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("tail: reopen %s: %w", path, err)
+	}
+	info, err := fp.Stat()
+	if err != nil {
+		fp.Close()
+		return nil, fmt.Errorf("tail: stat open file: %w", err)
+	}
+	if info.Size() == 0 {
+		fp.Close()
+		return nil, nil
 	}
 	if err := drain(fp, out); err != nil {
 		fp.Close()
