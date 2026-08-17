@@ -28,6 +28,7 @@ var validLayers = map[string]bool{"baseline": true, "pro": true, "user": true}
 // Identity is the trust anchor for a catalog entry.
 type Identity struct {
 	ExeBasename    string `toml:"exe_basename,omitempty"`
+	ExeSHA256      string `toml:"exe_sha256,omitempty" json:"-"`
 	TeamID         string `toml:"team_id,omitempty"`
 	BundleID       string `toml:"bundle_id,omitempty"`
 	SignedRequired bool   `toml:"signed_required,omitempty"`
@@ -68,11 +69,13 @@ type LayerFile struct {
 }
 
 // MatchResult is the answer to whether the catalog has a fact about an
-// identity and host pairing.
+// identity and host pairing. Found means the catalog can explain the prompt;
+// Authoritative means it can decide without asking.
 type MatchResult struct {
-	Found    bool
-	Entry    Entry
-	NeverHit bool
+	Found         bool
+	Entry         Entry
+	NeverHit      bool
+	Authoritative bool
 }
 
 // Load parses TOML bytes into a Catalog, rejecting invalid entries.
@@ -104,12 +107,44 @@ func LoadFile(path string) (*Catalog, error) {
 	return Load(b)
 }
 
+// LoadLayer parses a catalog file for a specific source layer. Entry.Layer is
+// data, but the source file owns layer semantics; a baseline file cannot
+// self-declare user authority.
+func LoadLayer(b []byte, layerName string) (*Catalog, error) {
+	if !validLayers[layerName] {
+		return nil, fmt.Errorf("catalog: invalid source layer %q", layerName)
+	}
+	c, err := Load(b)
+	if err != nil {
+		return nil, err
+	}
+	for i, e := range c.entries {
+		if e.Layer != layerName {
+			return nil, fmt.Errorf("entry %d declares layer %q in %s layer file", i, e.Layer, layerName)
+		}
+	}
+	return c, nil
+}
+
+// LoadLayerFile parses a catalog file and verifies every entry declares the
+// same layer as the source file being loaded.
+func LoadLayerFile(layerName, path string) (*Catalog, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, os.ErrNotExist
+	}
+	if err != nil {
+		return nil, fmt.Errorf("catalog: read %s: %w", path, err)
+	}
+	return LoadLayer(b, layerName)
+}
+
 // LoadLayers merges the supplied catalog layers in order. Missing files are
 // empty layers; malformed or unreadable files prevent startup.
 func LoadLayers(layers ...LayerFile) (*Catalog, error) {
 	live := &Catalog{}
 	for _, layer := range layers {
-		loaded, err := LoadFile(layer.Path)
+		loaded, err := LoadLayerFile(layer.Name, layer.Path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -136,27 +171,27 @@ func (c *Catalog) Merge(other *Catalog) {
 	c.entries = append(c.entries, entries...)
 }
 
-// Lookup matches id by BundleID first, then ExeBasename fallback, each with
-// optional TeamID narrowing. Found means the host is explicitly expected or
-// explicitly listed as never for the matched identity.
+// Lookup matches id and host against catalog facts. Name-only entries can
+// explain a prompt, but only pinned entries can decide without asking.
 func (c *Catalog) Lookup(id Identity, host string) MatchResult {
 	nh := normalizeHost(host)
 	var expected MatchResult
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, e := range c.entries {
-		if !identityMatches(e.Identity, id) {
+		if !identityDescribes(e.Identity, id) {
 			continue
 		}
+		authoritative := entryCanDecide(e)
 		for _, never := range e.Never {
 			if normalizeHost(never) == nh {
-				return MatchResult{Found: true, Entry: e, NeverHit: true}
+				return MatchResult{Found: true, Entry: e, NeverHit: true, Authoritative: authoritative}
 			}
 		}
 		for _, d := range e.ExpectedDestinations {
 			if normalizeHost(d.Host) == nh {
-				if !expected.Found {
-					expected = MatchResult{Found: true, Entry: e}
+				if !expected.Found || (!expected.Authoritative && authoritative) {
+					expected = MatchResult{Found: true, Entry: e, Authoritative: authoritative}
 				}
 			}
 		}
@@ -199,8 +234,25 @@ func (c *Catalog) Add(e Entry) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries = append(c.entries, e)
+	c.entries = append(c.entries, cloneEntry(e))
 	return nil
+}
+
+// AddIfAbsent validates e and appends it only when the same identity has not
+// already ratified the same allow/deny destinations.
+func (c *Catalog) AddIfAbsent(e Entry) (bool, error) {
+	if err := validateEntry(e); err != nil {
+		return false, fmt.Errorf("catalog: add: %w", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, existing := range c.entries {
+		if sameIdentityAndDestinations(existing, e) {
+			return false, nil
+		}
+	}
+	c.entries = append(c.entries, cloneEntry(e))
+	return true, nil
 }
 
 // Marshal serializes the catalog to TOML, round-trippable through Load.
@@ -216,23 +268,75 @@ func (c *Catalog) Marshal() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func identityMatches(entryID, queryID Identity) bool {
-	if entryID.BundleID != "" {
-		if entryID.BundleID != queryID.BundleID {
-			return false
-		}
-		if entryID.TeamID != "" && entryID.TeamID != queryID.TeamID {
-			return false
-		}
-		return true
+func identityDescribes(entryID, queryID Identity) bool {
+	if entryID.ExeSHA256 == "" && entryID.BundleID == "" && entryID.TeamID == "" && entryID.ExeBasename == "" {
+		return false
 	}
-	if entryID.ExeBasename != "" && entryID.ExeBasename == queryID.ExeBasename {
-		if entryID.TeamID != "" && entryID.TeamID != queryID.TeamID {
+	if entryID.ExeSHA256 != "" && !strings.EqualFold(entryID.ExeSHA256, queryID.ExeSHA256) {
+		return false
+	}
+	if entryID.BundleID != "" && entryID.BundleID != queryID.BundleID {
+		return false
+	}
+	if entryID.TeamID != "" && entryID.TeamID != queryID.TeamID {
+		return false
+	}
+	if entryID.ExeBasename != "" && entryID.ExeBasename != queryID.ExeBasename {
+		return false
+	}
+	return true
+}
+
+func entryCanDecide(e Entry) bool {
+	return HasDecisionPin(e.Identity)
+}
+
+func HasDecisionPin(id Identity) bool {
+	return id.ExeSHA256 != "" || id.TeamID != "" || id.BundleID != ""
+}
+
+func sameIdentityAndDestinations(a, b Entry) bool {
+	return a.Identity == b.Identity &&
+		sameExpectedDestinations(a.ExpectedDestinations, b.ExpectedDestinations) &&
+		sameHosts(a.Never, b.Never)
+}
+
+func cloneEntry(e Entry) Entry {
+	e.ExpectedDestinations = append([]Destination(nil), e.ExpectedDestinations...)
+	e.Never = append([]string(nil), e.Never...)
+	return e
+}
+
+func sameExpectedDestinations(a, b []Destination) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ah := make(map[string]bool, len(a))
+	for _, d := range a {
+		ah[normalizeHost(d.Host)] = true
+	}
+	for _, d := range b {
+		if !ah[normalizeHost(d.Host)] {
 			return false
 		}
-		return true
 	}
-	return false
+	return true
+}
+
+func sameHosts(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ah := make(map[string]bool, len(a))
+	for _, h := range a {
+		ah[normalizeHost(h)] = true
+	}
+	for _, h := range b {
+		if !ah[normalizeHost(h)] {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeHost(h string) string {
@@ -240,8 +344,8 @@ func normalizeHost(h string) string {
 }
 
 func validateEntry(e Entry) error {
-	if e.Identity.BundleID == "" && e.Identity.ExeBasename == "" {
-		return fmt.Errorf("empty identity: at least one of bundle_id or exe_basename required")
+	if e.Identity.ExeSHA256 == "" && e.Identity.BundleID == "" && e.Identity.TeamID == "" && e.Identity.ExeBasename == "" {
+		return fmt.Errorf("empty identity: at least one identity field required")
 	}
 	if e.Evidence == "" {
 		return fmt.Errorf("missing evidence: a catalog fact requires evidence")

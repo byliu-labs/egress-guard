@@ -115,6 +115,7 @@ explanation = "test fixture"
 
 [entry.identity]
 exe_basename = "nebridge-proto-test"
+team_id = "TESTTEAM"
 
 [[entry.expected_destinations]]
 host = "catalog.localhost"

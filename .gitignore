@@ -14,6 +14,9 @@ internal/config/defaults_embedded.toml
 # Local notes / manual-test scratch — never publish
 .local/
 
+# Superpowers local execution reports — never publish
+.superpowers/
+
 # Claude Code project state — local only, never publish
 
 # The context-tree opt-in sentinel MUST be tracked: without it in a fresh clone the

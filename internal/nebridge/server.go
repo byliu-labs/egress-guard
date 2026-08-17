@@ -142,6 +142,12 @@ func (s *Server) handleConn(conn net.Conn) {
 			if errors.Is(err, io.EOF) {
 				return
 			}
+			if isTimeout(err) {
+				reason := "idle_request_timeout: " + err.Error()
+				s.logDeny("", 0, "", reason)
+				s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
+				return
+			}
 			reason := "malformed_request: " + err.Error()
 			s.logDeny("", 0, "", reason)
 			s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
@@ -198,8 +204,6 @@ func responseForEntry(host string, entry decisionlog.Entry) (Response, decisionl
 		return Response{Verdict: VerdictAllow, Host: host, Reason: entry.Reason}, entry
 	case decisionlog.DecisionDeny:
 		return Response{Verdict: VerdictDrop, Host: host, Reason: entry.Reason}, entry
-	case decisionlog.DecisionAsk:
-		return Response{Verdict: VerdictAsk, Host: host, Reason: entry.Reason}, entry
 	default:
 		reason := invalidDecisionReason(entry.Decision)
 		entry.Decision = decisionlog.DecisionDeny
@@ -214,6 +218,11 @@ func invalidDecisionReason(decision decisionlog.Decision) string {
 		return "invalid_decision: empty"
 	}
 	return fmt.Sprintf("invalid_decision: %q", decision)
+}
+
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func (s *Server) writeResponse(conn net.Conn, response Response) {

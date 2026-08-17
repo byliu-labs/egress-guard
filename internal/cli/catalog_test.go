@@ -5,9 +5,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/catalogfetch"
 	"github.com/byliu-labs/egress-guard/internal/catalogsig"
 )
 
@@ -44,6 +46,8 @@ func TestCatalog_FetchWithPubkeyVerifiesSignature(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
+	catalogFetcher = catalogfetch.HTTPFetcher{Client: srv.Client()}
+	t.Cleanup(func() { catalogFetcher = catalogfetch.HTTPFetcher{} })
 
 	cfg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfg)
@@ -61,17 +65,30 @@ func TestCatalog_FetchWithPubkeyVerifiesSignature(t *testing.T) {
 	}
 }
 
-func TestCatalog_FetchRequiresPubkey(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestCatalog_DefaultFetchRequiresSignedCatalog(t *testing.T) {
+	signatureRequests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			signatureRequests++
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		_, _ = w.Write([]byte(cliValidBaselineTOML))
 	}))
 	defer srv.Close()
+	catalogFetcher = catalogfetch.HTTPFetcher{Client: srv.Client()}
+	t.Cleanup(func() { catalogFetcher = catalogfetch.HTTPFetcher{} })
 
 	cfg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfg)
 
-	if err := Catalog([]string{"fetch", "--url", srv.URL}); err == nil {
+	if err := Catalog([]string{"fetch", "--url", srv.URL + "/catalog.toml"}); err == nil {
 		t.Fatal("expected unsigned catalog fetch to be refused")
+	} else if !strings.Contains(err.Error(), ".sig") {
+		t.Fatalf("error %q does not name the missing signature", err)
+	}
+	if signatureRequests != 1 {
+		t.Fatalf("default fetch made %d signature requests, want 1", signatureRequests)
 	}
 	want := filepath.Join(cfg, "egress-guard", "catalog-baseline.toml")
 	if _, err := os.Stat(want); !os.IsNotExist(err) {

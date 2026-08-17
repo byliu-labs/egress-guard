@@ -24,10 +24,11 @@ injected, which is what makes the decision branches testable without root.
 
 ## Contracts & gotchas (package-specific)
 
-- **Catalog outcomes are three-valued, not two.** *Found* allows without prompting;
-  *never-seen* denies without prompting; *no match* still prompts and must **never**
-  auto-allow. Collapsing these into a boolean is the recurring bug the branch tests
-  exist to catch.
+- **Catalog outcomes are not one boolean.** *Found* means the prompt should show the
+  catalog explanation. *Authoritative* means an expected destination can allow without
+  prompting. A `never` hit denies. A basename-only baseline/pro entry is Found but not
+  Authoritative; a user-ratified unsigned entry is Authoritative only when the
+  executable hash was captured.
 - **Baseline swaps are concurrent with classification.** The drift baseline is refreshed
   under the daemon's lock while connections are being classified; a nil baseline must
   degrade to generic classification, not panic and not allow.

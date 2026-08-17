@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -78,6 +79,36 @@ func TestFetchVerified_InstallsSignedCatalog(t *testing.T) {
 	}
 }
 
+func TestFetchVerified_RejectsSignedBaselineWithLayerEscalation(t *testing.T) {
+	pub, priv, err := catalogsig.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	evil := strings.Replace(validBaselineTOML, `layer = "baseline"`, `layer = "user"`, 1)
+	sig, err := catalogsig.Sign([]byte(evil), priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/c", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(evil))
+	})
+	mux.HandleFunc("/c.sig", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(sig)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "catalog-baseline.toml")
+	err = FetchVerified(context.Background(), srv.URL+"/c", srv.URL+"/c.sig", dest, HTTPFetcher{}, pub)
+	if err == nil {
+		t.Fatal("FetchVerified accepted a signed baseline catalog containing layer=user")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("no file must be written when baseline layer validation fails")
+	}
+}
+
 func TestFetchVerified_RejectsEmptyCatalogAndPreservesExisting(t *testing.T) {
 	pub, priv, err := catalogsig.GenerateKey()
 	if err != nil {
@@ -119,5 +150,36 @@ func TestHTTPFetcher_RejectsPlainRemoteHTTP(t *testing.T) {
 	_, err := (HTTPFetcher{}).Fetch(context.Background(), "http://example.com/catalog.toml")
 	if err == nil {
 		t.Fatal("expected plain remote HTTP to be rejected before download")
+	}
+}
+
+func TestHTTPFetcher_RejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, MaxCatalogBytes+1))
+	}))
+	defer srv.Close()
+
+	_, err := (HTTPFetcher{Client: srv.Client()}).Fetch(context.Background(), srv.URL+"/catalog.toml")
+	if err == nil {
+		t.Fatal("oversized body accepted")
+	}
+}
+
+func TestHTTPFetcher_RejectsCrossHostRedirect(t *testing.T) {
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(validBaselineTOML))
+	}))
+	defer final.Close()
+	hop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL+"/catalog.toml", http.StatusFound)
+	}))
+	defer hop.Close()
+
+	_, err := (HTTPFetcher{Client: hop.Client()}).Fetch(context.Background(), hop.URL+"/catalog.toml")
+	if err == nil {
+		t.Fatal("cross-host redirect followed")
+	}
+	if !strings.Contains(err.Error(), "cross-host") {
+		t.Fatalf("error %q does not name cross-host redirect", err)
 	}
 }

@@ -60,7 +60,7 @@ type Event struct {
 
 const minStableDays = 2
 
-const baselineSchemaVersion = 1
+const baselineSchemaVersion = 2
 
 const (
 	rankNeverHit         = 4
@@ -157,7 +157,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 			ev.Rank = rankNeverHit
 			return ev
 		}
-		if match.Found {
+		if match.Found && match.Authoritative {
 			ev.Class = ClassKnown
 			return ev
 		}
@@ -289,11 +289,11 @@ func identityFromEntry(e decisionlog.Entry) catalog.Identity {
 	if base == "" || base == "." {
 		base = e.Comm
 	}
-	return catalog.Identity{ExeBasename: base, TeamID: e.TeamID}
+	return catalog.Identity{ExeBasename: base, ExeSHA256: e.ExeSHA256, TeamID: e.TeamID}
 }
 
 func identityKey(id catalog.Identity) string {
-	return id.TeamID + "\x00" + id.ExeBasename
+	return id.ExeSHA256 + "\x00" + id.TeamID + "\x00" + id.ExeBasename
 }
 
 func hostKey(host string) string {

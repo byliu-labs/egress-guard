@@ -97,7 +97,10 @@ func run(args []string) error {
 
 	var resolver nebridge.IdentityResolver = productionIdentityResolver()
 	if *testStubIdentity {
-		resolver = nebridge.StubResolver{Proc: procid.ProcInfo{Comm: "nebridge-proto-test"}}
+		resolver = nebridge.StubResolver{
+			Proc: procid.ProcInfo{Comm: "nebridge-proto-test"},
+			Sig:  signature.SignedIdentity{Valid: true, TeamID: "TESTTEAM"},
+		}
 	}
 	listener, err := nebridge.Listen(*socketPath)
 	if err != nil {
