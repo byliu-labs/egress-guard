@@ -56,7 +56,8 @@ why  = "Chrome component and extension updates"
 | `evidence` | yes | A sentence describing why this is trusted: a signature you verified, vendor documentation, or a published Team ID list. "It seemed to work" is not evidence. |
 | `explanation` | yes | The plain-English sentence a drift prompt shows the user. Write it for someone who has never heard of this process. |
 | `never` | no | Hostnames this identity should never reach. This turns the entry into an anomaly detector for a legitimate identity contacting an illegitimate destination. |
-| `entry.identity.exe_sha256` | no | SHA-256 of the executable bytes. When present, the runtime binary hash must match exactly. |
+| `entry.identity.exe_path` | paired | Absolute symlink-resolved executable path. If present, `exe_sha256` must also be present. |
+| `entry.identity.exe_sha256` | paired | SHA-256 of the executable bytes. New entries must pair it with `exe_path`; the runtime path and hash must both match exactly. |
 | `entry.identity.bundle_id` | no | Bundle identifier. When present, the runtime bundle ID must match exactly. |
 | `entry.identity.team_id` | no | Signing team identifier. When present, the runtime signing team must match exactly. |
 | `entry.identity.exe_basename` | conditional | At least one identity field is required. Basenames are useful prompt labels, but baseline/pro basename-only entries cannot silently allow traffic. |
@@ -66,10 +67,11 @@ why  = "Chrome component and extension updates"
 
 ## Confidence Floor
 
-An identity anchored only by `exe_basename`, with no `exe_sha256`, `team_id`,
-or `bundle_id`, cannot produce a silent daemon allow from the `baseline` or
-`pro` layers. Renaming a binary to match a basename costs an attacker nothing.
-Forging a binary hash, Developer ID, or bundle ID match does not.
+An identity anchored only by `exe_basename`, with no paired `exe_path` +
+`exe_sha256`, `team_id`, or `bundle_id`, cannot produce a silent daemon allow
+from the `baseline` or `pro` layers. Renaming a binary to match a basename
+costs an attacker nothing. Forging a binary hash, path, Developer ID, or bundle
+ID match does not.
 
 The loader still accepts name-only `medium` entries so prompts can carry human
 curated explanations for common tools. `Lookup` therefore reports two separate
@@ -81,15 +83,24 @@ pin. The local `user` layer records explicit user ratifications, but a hashless
 ratification is still prompt context only; uncertainty must not become silent
 authority.
 
+Catalogs written by earlier user-layer builds may contain `exe_sha256` without
+`exe_path`. The loader accepts those entries so upgrades do not break daemon
+startup, but treats them as prompt context unless another decision pin such as
+`team_id` or `bundle_id` is present. New writes must include both executable
+path and hash.
+
 ## Match Rules
 
 Lookup uses conjunctive identity fields:
 
 1. Every identity field set by the entry must match the runtime identity.
-2. If the entry sets none of `exe_sha256`, `team_id`, or `bundle_id`, it may be
-   found for prompt context but is not authoritative unless it is in the local
-   `user` layer.
-3. If the entry also sets `exe_basename`, that basename must match too.
+2. If the entry sets `exe_path` or `exe_sha256`, both must be present and the
+   runtime executable path and hash must match exactly. Legacy user-layer
+   hash-only entries can be found for prompt context but are not executable
+   pins.
+3. If the entry sets none of paired `exe_path` + `exe_sha256`, `team_id`, or
+   `bundle_id`, it may be found for prompt context but is not authoritative.
+4. If the entry also sets `exe_basename`, that basename must match too.
 
 Host matching is exact after lowercasing and trimming one trailing dot. Version
 1 has no wildcard or suffix matching.

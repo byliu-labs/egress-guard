@@ -18,6 +18,7 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/drift"
 	"github.com/byliu-labs/egress-guard/internal/explain"
+	"github.com/byliu-labs/egress-guard/internal/pending"
 	"github.com/byliu-labs/egress-guard/internal/persist"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/prompt"
@@ -41,6 +42,8 @@ const (
 // client has a 15s timeout — too long to hold a prompt — so the daemon caps it
 // here. A var (not const) so tests can shrink it.
 var explainTimeout = 3 * time.Second
+
+const maxGraceHashesPerPath = 16
 
 // entryFor builds a decisionlog.Entry pre-populated with process, signature,
 // and trust-tier context. The caller adds DestIP/DestPort because those come
@@ -157,6 +160,10 @@ func attributePersistence(pi procid.ProcInfo) *persist.Source {
 // branch tests can exercise it without needing a live socket and so the logic
 // is robust if the fast-path ever gets refactored.
 func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionOutcome, decisionlog.Entry) {
+	return d.decideBranchWithIdentity(host, dstIP, pi, sig, d.identityFor(pi, sig))
+}
+
+func (d *Daemon) decideBranchWithIdentity(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) (decisionOutcome, decisionlog.Entry) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
 		return outcomeExempt, entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
 	}
@@ -169,12 +176,19 @@ func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig
 	case allowlist.Deny:
 		return outcomeDeny, entryFor(decisionlog.DecisionDeny, "host_denylisted", host, pi, sig, decisionlog.TierDefault)
 	default: // allowlist.Unknown
-		id := identityFor(pi, sig)
 		var match catalog.MatchResult
 		if d.opts.Catalog != nil {
 			match = d.opts.Catalog.Lookup(id, host)
 			if match.NeverHit {
 				return outcomeDeny, entryFor(decisionlog.DecisionDeny, "catalog_never_hit", host, pi, sig, decisionlog.TierCatalogFact)
+			}
+			if match.StaleBinary && d.staleGraceAvailable(id.ExePath) {
+				if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
+					return outcome, entry
+				}
+				if d.recordPending(match.Entry, id, host) {
+					return outcomeAllow, entryFor(decisionlog.DecisionAllow, "unratified_binary_grace", host, pi, sig, decisionlog.TierDefault)
+				}
 			}
 			if match.Found && match.Authoritative {
 				if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
@@ -212,12 +226,54 @@ func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig
 	}
 }
 
-func identityFor(pi procid.ProcInfo, sig signature.SignedIdentity) catalog.Identity {
+func (d *Daemon) staleGraceAvailable(exePath string) bool {
+	counter, ok := d.opts.Pending.(pendingHashCounter)
+	if !ok || exePath == "" {
+		return true
+	}
+	n, err := counter.DistinctNewHashes(exePath)
+	if err != nil {
+		if d.opts.Logger != nil {
+			d.opts.Logger.Errorf("pending: count distinct hashes for %s: %v", exePath, err)
+		}
+		return false
+	}
+	return n < maxGraceHashesPerPath
+}
+
+func (d *Daemon) recordPending(old catalog.Entry, id catalog.Identity, host string) bool {
+	if d.opts.Pending == nil {
+		return false
+	}
+	it := pending.Item{
+		ExePath:   id.ExePath,
+		Basename:  id.ExeBasename,
+		OldSHA256: old.Identity.ExeSHA256,
+		NewSHA256: id.ExeSHA256,
+		Hosts:     []string{host},
+	}
+	if err := d.opts.Pending.Record(it); err != nil {
+		if d.opts.Logger != nil {
+			d.opts.Logger.Errorf("pending: record %s: %v", id.ExePath, err)
+		}
+		return false
+	}
+	return true
+}
+
+func (d *Daemon) identityFor(pi procid.ProcInfo, sig signature.SignedIdentity) catalog.Identity {
 	base := filepath.Base(pi.Exe)
 	if base == "" || base == "." {
 		base = pi.Comm
 	}
-	return catalog.Identity{ExeBasename: base, ExeSHA256: exeSHA256(pi.Exe), TeamID: sig.TeamID, BundleID: sig.BundleID}
+	id := catalog.Identity{ExeBasename: base, TeamID: sig.TeamID, BundleID: sig.BundleID}
+	if d.hasher != nil && pi.Exe != "" {
+		if real, sum, err := d.hasher.Hash(pi.Exe); err == nil {
+			id.ExePath = real
+			id.ExeSHA256 = sum
+		}
+	}
+	return id
 }
 
 func exeSHA256(path string) string {
@@ -293,9 +349,13 @@ func baseExecutableCacheKey(path string, info os.FileInfo) string {
 }
 
 func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) drift.Event {
+	exe := pi.Exe
+	if id.ExePath != "" {
+		exe = id.ExePath
+	}
 	entry := decisionlog.Entry{
 		Host:      host,
-		Exe:       pi.Exe,
+		Exe:       exe,
 		Comm:      pi.Comm,
 		PName:     pi.PComm,
 		ExeSHA256: id.ExeSHA256,
@@ -307,7 +367,11 @@ func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.Si
 		Cwd:       pi.Cwd,
 	}
 	if b := d.baseline.Load(); b != nil {
-		return b.Classify(entry)
+		ev := b.Classify(entry)
+		if catalog.HasDecisionPin(id) {
+			ev.Identity = id
+		}
+		return ev
 	}
 	return drift.Event{
 		Class:     drift.ClassDrift,

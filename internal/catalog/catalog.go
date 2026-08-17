@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -28,6 +29,7 @@ var validLayers = map[string]bool{"baseline": true, "pro": true, "user": true}
 // Identity is the trust anchor for a catalog entry.
 type Identity struct {
 	ExeBasename    string `toml:"exe_basename,omitempty"`
+	ExePath        string `toml:"exe_path,omitempty" json:"-"`
 	ExeSHA256      string `toml:"exe_sha256,omitempty" json:"-"`
 	TeamID         string `toml:"team_id,omitempty"`
 	BundleID       string `toml:"bundle_id,omitempty"`
@@ -78,6 +80,7 @@ type MatchResult struct {
 	Entry         Entry
 	NeverHit      bool
 	Authoritative bool
+	StaleBinary   bool
 }
 
 // Load parses TOML bytes into a Catalog, rejecting invalid entries.
@@ -88,7 +91,7 @@ func Load(b []byte) (*Catalog, error) {
 	}
 	entries := make([]Entry, 0, len(f.Entry))
 	for i, e := range f.Entry {
-		if err := validateEntry(e); err != nil {
+		if err := validateLoadedEntry(e); err != nil {
 			return nil, fmt.Errorf("catalog: entry %d: %w", i, err)
 		}
 		entries = append(entries, e)
@@ -181,9 +184,18 @@ func (c *Catalog) Merge(other *Catalog) {
 func (c *Catalog) Lookup(id Identity, host string) MatchResult {
 	nh := normalizeHost(host)
 	var expected MatchResult
+	var stale MatchResult
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, e := range c.entries {
+		if staleBinary(e, id) {
+			if hostInList(e.Never, nh) {
+				return MatchResult{Found: true, Entry: e, NeverHit: true, Authoritative: entryCanDecide(e), StaleBinary: true}
+			}
+			if hostInDestinations(e.ExpectedDestinations, nh) && !stale.StaleBinary {
+				stale = MatchResult{Entry: e, StaleBinary: true}
+			}
+		}
 		if !identityDescribes(e.Identity, id) {
 			continue
 		}
@@ -200,6 +212,12 @@ func (c *Catalog) Lookup(id Identity, host string) MatchResult {
 				}
 			}
 		}
+	}
+	if expected.Found {
+		return expected
+	}
+	if stale.StaleBinary {
+		return stale
 	}
 	return expected
 }
@@ -230,6 +248,17 @@ func (c *Catalog) EntryCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)
+}
+
+// Entries returns a snapshot copy of the catalog's entries.
+func (c *Catalog) Entries() []Entry {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]Entry, 0, len(c.entries))
+	for _, e := range c.entries {
+		out = append(out, cloneEntry(e))
+	}
+	return out
 }
 
 // IssuedAt is when this catalog artifact was compiled (RFC 3339 UTC), or ""
@@ -296,8 +325,17 @@ func identityDescribes(entryID, queryID Identity) bool {
 	if entryID.ExeSHA256 == "" && entryID.BundleID == "" && entryID.TeamID == "" && entryID.ExeBasename == "" {
 		return false
 	}
-	if entryID.ExeSHA256 != "" && !strings.EqualFold(entryID.ExeSHA256, queryID.ExeSHA256) {
-		return false
+	if entryID.ExePath != "" {
+		if queryID.ExeSHA256 == "" {
+			return false
+		}
+		if queryID.ExePath != entryID.ExePath || queryID.ExeSHA256 != entryID.ExeSHA256 {
+			return false
+		}
+	} else if entryID.ExeSHA256 != "" {
+		if queryID.ExeSHA256 != entryID.ExeSHA256 {
+			return false
+		}
 	}
 	if entryID.BundleID != "" && entryID.BundleID != queryID.BundleID {
 		return false
@@ -316,7 +354,36 @@ func entryCanDecide(e Entry) bool {
 }
 
 func HasDecisionPin(id Identity) bool {
-	return id.ExeSHA256 != "" || id.TeamID != "" || id.BundleID != ""
+	return (id.ExePath != "" && id.ExeSHA256 != "") || id.TeamID != "" || id.BundleID != ""
+}
+
+func staleBinary(e Entry, got Identity) bool {
+	want := e.Identity
+	if want.ExePath == "" || want.ExeSHA256 == "" || got.ExePath != want.ExePath {
+		return false
+	}
+	if got.ExeSHA256 == "" || got.ExeSHA256 == want.ExeSHA256 {
+		return false
+	}
+	return true
+}
+
+func hostInList(hosts []string, normalizedHost string) bool {
+	for _, h := range hosts {
+		if normalizeHost(h) == normalizedHost {
+			return true
+		}
+	}
+	return false
+}
+
+func hostInDestinations(destinations []Destination, normalizedHost string) bool {
+	for _, d := range destinations {
+		if normalizeHost(d.Host) == normalizedHost {
+			return true
+		}
+	}
+	return false
 }
 
 func sameIdentityAndDestinations(a, b Entry) bool {
@@ -367,7 +434,15 @@ func normalizeHost(h string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(h)), ".")
 }
 
+func validateLoadedEntry(e Entry) error {
+	return validateEntryWithOptions(e, true)
+}
+
 func validateEntry(e Entry) error {
+	return validateEntryWithOptions(e, false)
+}
+
+func validateEntryWithOptions(e Entry, allowLegacyUserHash bool) error {
 	if e.Identity.ExeSHA256 == "" && e.Identity.BundleID == "" && e.Identity.TeamID == "" && e.Identity.ExeBasename == "" {
 		return fmt.Errorf("empty identity: at least one identity field required")
 	}
@@ -385,6 +460,20 @@ func validateEntry(e Entry) error {
 	if e.Confidence == ConfidenceHigh && e.Identity.TeamID == "" && e.Identity.BundleID == "" {
 		return fmt.Errorf("confidence %q requires a signature anchor", ConfidenceHigh)
 	}
+	if e.Identity.ExeSHA256 != "" {
+		if !isHex64(e.Identity.ExeSHA256) {
+			return fmt.Errorf("invalid exe_sha256: must be 64 lowercase hex characters")
+		}
+		if e.Identity.ExePath == "" && !(allowLegacyUserHash && e.Layer == "user") {
+			return fmt.Errorf("exe_sha256 requires exe_path: a hash with no path can never be matched")
+		}
+	}
+	if e.Identity.ExePath != "" && e.Identity.ExeSHA256 == "" {
+		return fmt.Errorf("exe_path requires exe_sha256: a path without a hash silently disables the entry")
+	}
+	if e.Identity.ExePath != "" && !filepath.IsAbs(e.Identity.ExePath) {
+		return fmt.Errorf("exe_path %q must be absolute", e.Identity.ExePath)
+	}
 	if !validLayers[e.Layer] {
 		return fmt.Errorf("invalid layer %q: must be baseline, pro, or user", e.Layer)
 	}
@@ -392,4 +481,17 @@ func validateEntry(e Entry) error {
 		return fmt.Errorf("unsupported schema_version %d: this build supports %d", e.SchemaVersion, CurrentSchemaVersion)
 	}
 	return nil
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

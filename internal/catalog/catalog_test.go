@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -164,6 +165,92 @@ exe_basename = "mytool"
 `
 	if _, err := Load([]byte(toml)); err != nil {
 		t.Errorf("name-only identity at confidence:medium should be accepted, got %v", err)
+	}
+}
+
+func TestValidateEntry_RejectsMalformedExeSHA256(t *testing.T) {
+	base := Entry{
+		SchemaVersion:        CurrentSchemaVersion,
+		Identity:             Identity{ExeBasename: "git", ExePath: "/usr/bin/git", ExeSHA256: "NOTAHASH"},
+		ExpectedDestinations: []Destination{{Host: "github.com", Why: "fixture"}},
+		Explanation:          "git talks to github",
+		Evidence:             "fixture",
+		Confidence:           ConfidenceMedium,
+		Layer:                "user",
+	}
+	if err := (&Catalog{}).Add(base); err == nil {
+		t.Fatal("expected rejection of non-hex exe_sha256")
+	}
+
+	base.Identity.ExeSHA256 = strings.Repeat("a", 64)
+	base.Identity.ExePath = "usr/bin/git"
+	if err := (&Catalog{}).Add(base); err == nil {
+		t.Fatal("expected rejection of relative exe_path")
+	}
+
+	base.Identity.ExePath = "/usr/bin/git"
+	if err := (&Catalog{}).Add(base); err != nil {
+		t.Fatalf("valid pinned entry rejected: %v", err)
+	}
+}
+
+func TestValidateEntry_ExeSHA256RequiresExePath(t *testing.T) {
+	e := Entry{
+		SchemaVersion:        CurrentSchemaVersion,
+		Identity:             Identity{ExeBasename: "git", ExeSHA256: strings.Repeat("b", 64)},
+		ExpectedDestinations: []Destination{{Host: "github.com", Why: "fixture"}},
+		Explanation:          "git talks to github",
+		Evidence:             "fixture",
+		Confidence:           ConfidenceMedium,
+		Layer:                "user",
+	}
+	if err := (&Catalog{}).Add(e); err == nil {
+		t.Fatal("expected rejection: a hash without a path cannot be matched")
+	}
+}
+
+func TestLoad_PreviousReleaseHashOnlyUserEntryLoadsAsContext(t *testing.T) {
+	toml := `
+[[entry]]
+schema_version = 1
+explanation = "curl is allowed to reach example.com (ratified by user)"
+evidence = "ratified by user via drift prompt at 2026-08-01T00:00:00Z"
+confidence = "medium"
+layer = "user"
+
+[entry.identity]
+exe_basename = "curl"
+exe_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[entry.expected_destinations]]
+host = "example.com"
+why = "user-ratified allow via drift prompt"
+`
+	c, err := Load([]byte(toml))
+	if err != nil {
+		t.Fatalf("previous-release user catalog must still load: %v", err)
+	}
+	got := c.Lookup(Identity{ExeBasename: "curl", ExePath: "/usr/bin/curl", ExeSHA256: strings.Repeat("a", 64)}, "example.com")
+	if !got.Found {
+		t.Fatal("legacy hash-only entry should still explain the matching prompt")
+	}
+	if got.Authoritative {
+		t.Fatal("legacy hash-only entry must not silently allow without an executable path pin")
+	}
+}
+
+func TestValidateEntry_ExePathRequiresExeSHA256(t *testing.T) {
+	e := Entry{
+		SchemaVersion:        CurrentSchemaVersion,
+		Identity:             Identity{ExeBasename: "git", ExePath: "/usr/bin/git"},
+		ExpectedDestinations: []Destination{{Host: "github.com", Why: "fixture"}},
+		Explanation:          "git talks to github",
+		Evidence:             "fixture",
+		Confidence:           ConfidenceMedium,
+		Layer:                "user",
+	}
+	if err := (&Catalog{}).Add(e); err == nil {
+		t.Fatal("expected rejection: a path without a hash silently disables the entry")
 	}
 }
 
@@ -452,6 +539,7 @@ explanation = "mytool talks to its API"
 
 [entry.identity]
 exe_basename = "mytool"
+exe_path = "/usr/local/bin/mytool"
 exe_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [[entry.expected_destinations]]
@@ -467,7 +555,7 @@ host = "api.mytool.example"
 	}
 	base.Merge(user)
 
-	res := base.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "api.mytool.example")
+	res := base.Lookup(Identity{ExeBasename: "mytool", ExePath: "/usr/local/bin/mytool", ExeSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "api.mytool.example")
 	if !res.Found || !res.Authoritative {
 		t.Fatalf("user ratification should make later matching lookups authoritative: %+v", res)
 	}
@@ -540,6 +628,7 @@ explanation = "mytool phones home to its own API"
 
 [entry.identity]
 exe_basename = "mytool"
+exe_path = "/usr/local/bin/mytool"
 exe_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [[entry.expected_destinations]]
@@ -549,10 +638,16 @@ host = "api.mytool.example"
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := c.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "api.mytool.example"); got.Found {
+	if got := c.Lookup(Identity{ExeBasename: "mytool", ExePath: "/usr/local/bin/mytool", ExeSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "api.mytool.example"); got.Found {
 		t.Fatalf("wrong binary hash matched catalog entry: %+v", got)
 	}
-	if got := c.Lookup(Identity{ExeBasename: "mytool", ExeSHA256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, "api.mytool.example"); !got.Found || !got.Authoritative {
+	if got := c.Lookup(Identity{ExeBasename: "mytool", ExePath: "/tmp/mytool", ExeSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "api.mytool.example"); got.Found {
+		t.Fatalf("wrong binary path matched catalog entry: %+v", got)
+	}
+	if got := c.Lookup(Identity{ExeBasename: "mytool", ExePath: "/usr/local/bin/mytool", ExeSHA256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, "api.mytool.example"); got.Found {
+		t.Fatalf("uppercase binary hash matched lowercase catalog pin: %+v", got)
+	}
+	if got := c.Lookup(Identity{ExeBasename: "mytool", ExePath: "/usr/local/bin/mytool", ExeSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "api.mytool.example"); !got.Found || !got.Authoritative {
 		t.Fatalf("matching binary hash did not match catalog entry: %+v", got)
 	}
 }

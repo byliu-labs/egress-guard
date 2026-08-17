@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/prompt"
 	"github.com/byliu-labs/egress-guard/internal/signature"
@@ -104,6 +105,78 @@ func TestRatifyLoop_UnsignedAllowAlways_SecondConnectionIsSilent(t *testing.T) {
 	}
 	if notifier.calls != 1 {
 		t.Errorf("Notify calls = %d, want 1", notifier.calls)
+	}
+}
+
+func TestRatifyLoop_PinnedBinarySilentlyAllowsOnlyItself(t *testing.T) {
+	cat := &catalog.Catalog{}
+	path := filepath.Join(t.TempDir(), "catalog-user.toml")
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "git")
+	if err := os.WriteFile(exe, []byte("real git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	notifier := &countingNotifier{a: prompt.ActionAllowAlways}
+	dec := prompt.New(prompt.Options{
+		Notifier:     notifier,
+		RatifyWriter: &fileBackedRatifyWriter{path: path, cat: cat},
+	})
+	d := newDaemonForBranchWithCatalog(t, dec, cat)
+	pi := procid.ProcInfo{PID: 25, Exe: exe, Comm: "git"}
+
+	outcome1, entry1 := d.decideBranch("github.com", nil, pi, signature.SignedIdentity{})
+	if outcome1 != outcomeAllow || entry1.Reason != "user_allowed" {
+		t.Fatalf("first connection: outcome=%v entry=%+v, want allow/user_allowed", outcome1, entry1)
+	}
+	if notifier.calls != 1 {
+		t.Fatalf("Notify calls after first connection = %d, want 1", notifier.calls)
+	}
+
+	outcome2, entry2 := d.decideBranch("github.com", nil, pi, signature.SignedIdentity{})
+	if outcome2 != outcomeAllow || entry2.Reason != "catalog_fact" {
+		t.Fatalf("ratified binary: outcome=%v entry=%+v, want allow/catalog_fact", outcome2, entry2)
+	}
+	if notifier.calls != 1 {
+		t.Fatalf("Notify calls after ratified binary = %d, want still 1", notifier.calls)
+	}
+
+	impostor := filepath.Join(dir, "sub", "git")
+	if err := os.MkdirAll(filepath.Dir(impostor), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(impostor, []byte("real git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	denyImpostor := &countingNotifier{a: prompt.ActionDeny}
+	d2 := newDaemonForBranchWithCatalog(t, prompt.New(prompt.Options{Notifier: denyImpostor}), cat)
+	if outcome, _ := d2.decideBranch("github.com", nil, procid.ProcInfo{PID: 26, Exe: impostor, Comm: "git"}, signature.SignedIdentity{}); outcome == outcomeAllow {
+		t.Fatal("an impostor at a different path was silently allowed")
+	}
+	if denyImpostor.calls != 1 {
+		t.Fatalf("impostor Notify calls = %d, want 1", denyImpostor.calls)
+	}
+
+	if err := os.WriteFile(exe, []byte("tampered git binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	changedRec := &recordingPending{}
+	denyChanged := &countingNotifier{a: prompt.ActionDeny}
+	d3 := newDaemonForBranchWithCatalog(t, prompt.New(prompt.Options{Notifier: denyChanged}), cat)
+	d3.opts.Pending = changedRec
+	outcome3, entry3 := d3.decideBranch("github.com", nil, procid.ProcInfo{PID: 27, Exe: exe, Comm: "git"}, signature.SignedIdentity{})
+	if outcome3 != outcomeAllow || entry3.Reason != "unratified_binary_grace" {
+		t.Fatalf("changed binary: outcome=%v entry=%+v, want grace allow", outcome3, entry3)
+	}
+	if entry3.TrustTier == decisionlog.TierCatalogFact {
+		t.Fatal("changed binary grace must not be logged as a catalog fact")
+	}
+	if denyChanged.calls != 0 {
+		t.Fatalf("changed binary Notify calls = %d, want 0 under grace", denyChanged.calls)
+	}
+	if len(changedRec.items) != 1 {
+		t.Fatalf("pending items = %d, want 1", len(changedRec.items))
 	}
 }
 

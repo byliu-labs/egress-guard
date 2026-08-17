@@ -3,6 +3,7 @@ package prompt
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -37,6 +38,35 @@ func TestCatalogEntryFor_AllowPopulatesExpectedDestinations(t *testing.T) {
 	}
 	if e.Evidence == "" {
 		t.Error("Evidence must be non-empty")
+	}
+}
+
+func TestCatalogEntryFor_AllowPinsObservedBinary(t *testing.T) {
+	req := Request{
+		Host:   "github.com",
+		Proc:   procid.ProcInfo{Exe: "/usr/bin/git", Comm: "git"},
+		RegDom: "github.com",
+		Drift: drift.Event{Identity: catalog.Identity{
+			ExeBasename: "git",
+			ExePath:     "/usr/bin/git",
+			ExeSHA256:   strings.Repeat("d", 64),
+		}},
+	}
+	e := catalogEntryFor(req, true)
+	if e.Identity.ExePath != "/usr/bin/git" {
+		t.Errorf("ExePath = %q, want /usr/bin/git", e.Identity.ExePath)
+	}
+	if e.Identity.ExeSHA256 != strings.Repeat("d", 64) {
+		t.Errorf("ExeSHA256 = %q, want observed hash", e.Identity.ExeSHA256)
+	}
+	if len(e.ExpectedDestinations) != 1 || e.ExpectedDestinations[0].Host != "github.com" {
+		t.Errorf("ExpectedDestinations = %+v, want one entry for github.com", e.ExpectedDestinations)
+	}
+	if len(e.Never) != 0 {
+		t.Errorf("Never = %v, want empty on allow", e.Never)
+	}
+	if e.Layer != "user" {
+		t.Errorf("Layer = %q, want user", e.Layer)
 	}
 }
 

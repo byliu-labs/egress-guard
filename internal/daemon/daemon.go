@@ -19,10 +19,21 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/exempt"
 	"github.com/byliu-labs/egress-guard/internal/explain"
 	"github.com/byliu-labs/egress-guard/internal/kernel"
+	"github.com/byliu-labs/egress-guard/internal/pending"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/prompt"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
+
+// PendingRecorder records upgraded binaries that are allowed under narrow
+// stale-pin grace and need later user review.
+type PendingRecorder interface {
+	Record(pending.Item) error
+}
+
+type pendingHashCounter interface {
+	DistinctNewHashes(exePath string) (int, error)
+}
 
 // Options bundles the daemon's runtime dependencies.
 type Options struct {
@@ -64,6 +75,10 @@ type Options struct {
 	// Logger surfaces background explainer failures. Nil drops them silently.
 	Logger explain.Logger
 
+	// Pending receives stale-binary grace observations. Grace is not granted
+	// unless the observation is recorded.
+	Pending PendingRecorder
+
 	// ObserveOnly puts the daemon in shadow mode: policy verdicts are logged
 	// as Decision=observe but not enforced. Entry.Action keeps the shadow
 	// allow/deny verdict for later drift analysis.
@@ -83,6 +98,7 @@ type Daemon struct {
 	ready    chan struct{}
 	dial     func(network, address string) (net.Conn, error)
 	mu       sync.Mutex
+	hasher   *procid.ExeHasher
 	// baseline is the drift baseline the decision path consults. It is an
 	// atomic pointer (not opts.Baseline directly) so a background refresher can
 	// swap it while connection goroutines read it without a data race. A nil
@@ -95,7 +111,7 @@ func New(opts Options) (*Daemon, error) {
 	if opts.Allow == nil || opts.Log == nil || opts.Kernel == nil {
 		return nil, errors.New("daemon: Options missing required field")
 	}
-	d := &Daemon{opts: opts, ready: make(chan struct{}), dial: net.Dial}
+	d := &Daemon{opts: opts, ready: make(chan struct{}), dial: net.Dial, hasher: procid.NewExeHasher()}
 	d.baseline.Store(opts.Baseline) // may be nil; atomic.Pointer handles it
 	return d, nil
 }

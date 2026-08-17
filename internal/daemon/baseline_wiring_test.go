@@ -46,3 +46,22 @@ func TestClassifyDrift_UsesRuntimeExeSHA256ForBaselineKey(t *testing.T) {
 		t.Fatalf("expected exe_sha256-keyed baseline to classify known, got class=%q reason=%q", ev.Class, ev.Reason)
 	}
 }
+
+func TestClassifyDrift_PreservesRuntimeExePathForRatification(t *testing.T) {
+	d := &Daemon{}
+	d.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, nil))
+	fullID := catalog.Identity{
+		ExeBasename: "node",
+		ExePath:     "/opt/homebrew/Cellar/node/25.8.2/bin/node",
+		ExeSHA256:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+
+	ev := d.classifyDrift("registry.npmjs.org",
+		procid.ProcInfo{Exe: "/opt/homebrew/bin/node", PID: 1},
+		signature.SignedIdentity{},
+		fullID)
+
+	if ev.Identity != fullID {
+		t.Fatalf("Drift identity = %+v, want runtime identity %+v", ev.Identity, fullID)
+	}
+}
