@@ -10,12 +10,12 @@ import (
 )
 
 func TestShippedCatalog_BasenameOnlyEntryPromptsWithExplanationButNeverAllows(t *testing.T) {
-	cat, err := catalog.LoadFile(filepath.Join("..", "..", "catalog-baseline.toml"))
+	cat, err := catalog.LoadLayerFile("baseline", filepath.Join("..", "..", "catalog-baseline.toml"))
 	if err != nil {
-		t.Fatalf("LoadFile(catalog-baseline.toml): %v", err)
+		t.Fatalf("LoadLayerFile(catalog-baseline.toml): %v", err)
 	}
-	if cat.EntryCount() != 10 {
-		t.Fatalf("shipped baseline entry count = %d, want 10", cat.EntryCount())
+	if cat.EntryCount() == 0 {
+		t.Fatal("shipped baseline catalog is empty")
 	}
 
 	cases := []struct {

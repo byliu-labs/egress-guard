@@ -166,6 +166,45 @@ func TestFollower_WaitsForLateCreate(t *testing.T) {
 	}
 }
 
+func TestFollower_LateCreateDoesNotDuplicateAfterTickerAndCreate(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		got := followLateCreatedFileOnce(t)
+		if got != "FIRST\n" {
+			t.Fatalf("iter %d: got %q, want %q", i, got, "FIRST\n")
+		}
+	}
+}
+
+func followLateCreatedFileOnce(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blocked.log")
+
+	out := &safeBuffer{}
+	f := &Follower{Path: path, Out: out}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- f.Follow(ctx) }()
+
+	time.Sleep(100 * time.Millisecond)
+	if err := appendLine(path, "FIRST\n"); err != nil {
+		cancel()
+		t.Fatalf("create+append: %v", err)
+	}
+	if !waitUntil(func() bool { return out.String() != "" }) {
+		cancel()
+		t.Fatalf("late-created file was not drained within 5s")
+	}
+	time.Sleep(250 * time.Millisecond)
+	got := out.String()
+
+	cancel()
+	if err := <-errCh; err != nil && err != context.Canceled {
+		t.Fatalf("Follow returned %v after late create, want nil or context.Canceled", err)
+	}
+	return got
+}
+
 func waitUntil(fn func() bool) bool {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
