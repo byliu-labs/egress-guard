@@ -39,6 +39,25 @@ func (f *Follower) Follow(ctx context.Context) error {
 		return errors.New("tail: Out is nil")
 	}
 
+	var fp *os.File
+	defer func() {
+		if fp != nil {
+			fp.Close()
+		}
+	}()
+
+	// Snapshot pre-existing content before installing the watcher so a file
+	// created after this point is drained from byte 0, not mistaken for old
+	// history and skipped by seek-to-end.
+	if existing, err := openAndSeekEnd(f.Path); err == nil {
+		fp = existing
+		if err := drain(fp, f.Out); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
 	dir := filepath.Dir(f.Path)
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -52,23 +71,10 @@ func (f *Follower) Follow(ctx context.Context) error {
 	if err := w.Add(dir); err != nil {
 		return fmt.Errorf("tail: watch %s: %w", dir, err)
 	}
-
-	var fp *os.File
-	defer func() {
-		if fp != nil {
-			fp.Close()
-		}
-	}()
-
-	// Open if it already exists. If it doesn't, we'll catch the Create
-	// event below — same code path the rotation case already exercises.
-	if existing, err := openAndSeekEnd(f.Path); err == nil {
-		fp = existing
-		if err := drain(fp, f.Out); err != nil {
-			return err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if next, err := syncPath(f.Path, fp, f.Out); err != nil {
 		return err
+	} else {
+		fp = next
 	}
 
 	ticker := time.NewTicker(100 * time.Millisecond)
