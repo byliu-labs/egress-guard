@@ -79,7 +79,7 @@ func TestHandle_ObserveOnlyLogsWithoutEnforcing(t *testing.T) {
 	}
 	var got *decisionlog.Entry
 	for i := range entries {
-		if entries[i].Host == "denied.example.com" {
+		if entries[i].Host == "denied.example.com" && !entries[i].IsFlow() {
 			got = &entries[i]
 		}
 	}
