@@ -35,6 +35,12 @@ type pendingHashCounter interface {
 	DistinctNewHashes(exePath string) (int, error)
 }
 
+// IdleReporter reports whether a human was recently at the keyboard.
+// It is observational only: errors and nil omit the field from the log.
+type IdleReporter interface {
+	Active() (bool, error)
+}
+
 // Options bundles the daemon's runtime dependencies.
 type Options struct {
 	Listen string
@@ -78,6 +84,10 @@ type Options struct {
 	// Pending receives stale-binary grace observations. Grace is not granted
 	// unless the observation is recorded.
 	Pending PendingRecorder
+
+	// Idle stamps decision entries with presence metadata and never influences
+	// an allow or deny verdict.
+	Idle IdleReporter
 
 	// ObserveOnly puts the daemon in shadow mode: policy verdicts are logged
 	// as Decision=observe but not enforced. Entry.Action keeps the shadow
