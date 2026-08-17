@@ -62,19 +62,49 @@ func TestNebridgeProto_BinderDropsMismatchAndDNSFailure(t *testing.T) {
 	}
 }
 
-func TestNebridgeProto_DefaultSocketUsesPrivateDirectory(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+func TestDefaultSocketPath_NonRootUsesStateDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("non-root default path is not used when running as root")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	defaultSocket, err := defaultSocketPath()
 	if err != nil {
 		t.Fatalf("defaultSocketPath: %v", err)
 	}
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatalf("UserCacheDir: %v", err)
-	}
-	want := filepath.Join(cacheDir, "egress-guard", defaultSocketName)
+	want := filepath.Join(home, ".local", "state", "egress-guard", defaultSocketName)
 	if defaultSocket != want {
 		t.Fatalf("default socket = %q, want %q", defaultSocket, want)
+	}
+}
+
+func TestDefaultSocketPath_RootIsNotWorldWritable(t *testing.T) {
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		t.Fatalf("defaultSocketPath: %v", err)
+	}
+	dir := filepath.Dir(defaultSocket)
+	for {
+		info, err := os.Stat(dir)
+		if err == nil {
+			if info.Mode().Perm()&0o002 != 0 {
+				t.Fatalf("socket ancestor %s is world-writable (%v)", dir, info.Mode().Perm())
+			}
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no existing ancestor of %s", defaultSocket)
+		}
+		dir = parent
+	}
+}
+
+func TestNebridgeProto_DefaultSocketDirectoryCanBeCreatedPrivate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		t.Fatalf("defaultSocketPath: %v", err)
 	}
 	root := shortSocketDir(t)
 	socketPath := filepath.Join(root, filepath.Base(filepath.Dir(defaultSocket)), filepath.Base(defaultSocket))
@@ -91,6 +121,27 @@ func TestNebridgeProto_DefaultSocketUsesPrivateDirectory(t *testing.T) {
 	if mode := info.Mode().Perm(); mode != 0o700 {
 		t.Fatalf("default socket directory mode = %o, want 700", mode)
 	}
+}
+
+func TestNebridgeProto_DefaultSocketPathStartsInFreshHome(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("non-root default path is not used when running as root")
+	}
+	home, err := os.MkdirTemp("/tmp", "nb-home-")
+	if err != nil {
+		t.Fatalf("create short HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		t.Fatalf("defaultSocketPath: %v", err)
+	}
+	listener, err := nebridge.Listen(defaultSocket)
+	if err != nil {
+		t.Fatalf("listen on default socket path in fresh HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
 }
 
 func TestNebridgeProto_UsesBaselineCatalog(t *testing.T) {
@@ -174,11 +225,25 @@ func TestProductionIdentityResolverCachesSignatures(t *testing.T) {
 	}
 }
 
+func TestDefaultBuild_HasNoStubIdentityFlag(t *testing.T) {
+	out, err := exec.Command("go", "build", "-o", filepath.Join(t.TempDir(), "nb"), ".").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "test-stub-identity") {
+		t.Fatal("main.go still registers -test-stub-identity in the default build; gate it behind //go:build nebridge_testing")
+	}
+}
+
 func buildProto(t *testing.T, tempDir string) string {
 	t.Helper()
 
 	binary := filepath.Join(tempDir, "nebridge-proto")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	build := exec.Command("go", "build", "-tags", "nebridge_testing", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build nebridge-proto: %v\n%s", err, output)
 	}

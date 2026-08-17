@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 // Decider is satisfied by daemon.Daemon. It returns the audit entry for one
 // decision; Server persists that entry after adding bridge destination data.
 type Decider interface {
-	Decide(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) decisionlog.Entry
+	Decide(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionlog.Decision, decisionlog.Entry)
 }
 
 // Server turns one NEFilter request into one decision response.
@@ -31,7 +32,11 @@ type Server struct {
 	FrameDeadline time.Duration
 }
 
-const defaultBridgeFrameDeadline = 5 * time.Second
+const (
+	requestReadTimeout   = 5 * time.Second
+	responseWriteTimeout = 2 * time.Second
+	handlerDrainTimeout  = 2 * time.Second
+)
 
 // Listen creates a Unix-domain listener in a private directory owned by this
 // process's effective user. It rejects pre-existing unsafe directories instead
@@ -56,7 +61,7 @@ func Listen(socketPath string) (net.Listener, error) {
 }
 
 func ensureSocketDirectory(dir string) error {
-	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("nebridge: create socket directory %s: %w", dir, err)
 	}
 	info, err := os.Lstat(dir)
@@ -107,11 +112,22 @@ func removeStaleSocket(socketPath string) error {
 // fails. Each connection carries one or more requests.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	done := make(chan struct{})
+	active := make(map[net.Conn]struct{})
+	var activeMu sync.Mutex
+	var handlers sync.WaitGroup
 	defer close(done)
+	closeActive := func() {
+		activeMu.Lock()
+		defer activeMu.Unlock()
+		for conn := range active {
+			_ = conn.Close()
+		}
+	}
 	go func() {
 		select {
 		case <-ctx.Done():
 			_ = ln.Close()
+			closeActive()
 		case <-done:
 		}
 	}()
@@ -120,11 +136,38 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				closeActive()
+				return waitForHandlers(&handlers, handlerDrainTimeout)
 			}
 			return fmt.Errorf("nebridge: accept: %w", err)
 		}
-		go s.handleConn(conn)
+		activeMu.Lock()
+		active[conn] = struct{}{}
+		activeMu.Unlock()
+		handlers.Add(1)
+		go func() {
+			defer func() {
+				activeMu.Lock()
+				delete(active, conn)
+				activeMu.Unlock()
+				handlers.Done()
+			}()
+			s.handleConn(conn)
+		}()
+	}
+}
+
+func waitForHandlers(handlers *sync.WaitGroup, timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		handlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("nebridge: handler drain timed out after %s", timeout)
 	}
 }
 
@@ -133,7 +176,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(s.frameDeadline())); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(s.requestReadTimeout())); err != nil {
 			s.logDeny("", 0, "", "deadline_failed: "+err.Error())
 			return
 		}
@@ -145,71 +188,91 @@ func (s *Server) handleConn(conn net.Conn) {
 			if isTimeout(err) {
 				reason := "idle_request_timeout: " + err.Error()
 				s.logDeny("", 0, "", reason)
-				s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
+				_ = s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
 				return
 			}
-			reason := "malformed_request: " + err.Error()
+			reason := "frame_decode_failed: " + err.Error()
 			s.logDeny("", 0, "", reason)
-			s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
+			_ = s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
 			return
 		}
 		_ = conn.SetReadDeadline(time.Time{})
 		host, err := tlsparse.ParseSNI(req.ClientHello)
 		if err != nil {
-			s.drop(conn, "", req, "sni_parse_failed: "+err.Error())
+			if !s.drop(conn, "", req, "sni_parse_failed: "+err.Error()) {
+				return
+			}
 			continue
 		}
 		pi, sig, err := s.Resolver.Resolve(req.AuditToken)
 		if err != nil {
-			s.drop(conn, host, req, "identity_resolve_failed: "+err.Error())
+			if !s.drop(conn, host, req, "identity_resolve_failed: "+err.Error()) {
+				return
+			}
 			continue
 		}
 
-		entry := s.Decider.Decide(host, req.DstIP, pi, sig)
+		dec, entry := s.Decider.Decide(host, req.DstIP, pi, sig)
 		entry.DestIP = req.DstIP.String()
 		entry.DestPort = req.DstPort
-		response, entry := responseForEntry(host, entry)
-		_ = s.Log.Write(entry)
-		s.writeResponse(conn, response)
+		entry = logEntryForDecision(dec, entry)
+		if err := s.Log.Write(entry); err != nil {
+			_ = s.drop(conn, host, req, "log_write_failed: "+err.Error())
+			return
+		}
+		if err := s.writeResponse(conn, Response{Verdict: verdictFor(dec), Host: host, Reason: entry.Reason}); err != nil {
+			return
+		}
 	}
 }
 
-func (s *Server) drop(conn net.Conn, host string, req Request, reason string) {
+func (s *Server) drop(conn net.Conn, host string, req Request, reason string) bool {
 	entry := decisionlog.Entry{
-		Decision: decisionlog.DecisionDeny,
-		Action:   string(decisionlog.DecisionDeny),
-		Reason:   reason,
-		Host:     host,
-		DestIP:   req.DstIP.String(),
-		DestPort: req.DstPort,
+		Decision:  decisionlog.DecisionDeny,
+		Action:    string(decisionlog.DecisionDeny),
+		TrustTier: decisionlog.TierDefault,
+		Reason:    reason,
+		Host:      host,
+		DestIP:    req.DstIP.String(),
+		DestPort:  req.DstPort,
 	}
 	_ = s.Log.Write(entry)
-	s.writeResponse(conn, Response{Verdict: VerdictDrop, Host: host, Reason: reason})
+	return s.writeResponse(conn, Response{Verdict: VerdictDrop, Host: host, Reason: reason}) == nil
 }
 
 func (s *Server) logDeny(destIP string, destPort int, host, reason string) {
 	_ = s.Log.Write(decisionlog.Entry{
-		Decision: decisionlog.DecisionDeny,
-		Action:   string(decisionlog.DecisionDeny),
-		Reason:   reason,
-		Host:     host,
-		DestIP:   destIP,
-		DestPort: destPort,
+		Decision:  decisionlog.DecisionDeny,
+		Action:    string(decisionlog.DecisionDeny),
+		TrustTier: decisionlog.TierDefault,
+		Reason:    reason,
+		Host:      host,
+		DestIP:    destIP,
+		DestPort:  destPort,
 	})
 }
 
-func responseForEntry(host string, entry decisionlog.Entry) (Response, decisionlog.Entry) {
-	switch entry.Decision {
+// verdictFor maps a decision to a wire verdict. Allow is an explicit
+// whitelist, never an else-branch: an unrecognized decision state cannot
+// authorize egress.
+func verdictFor(dec decisionlog.Decision) Verdict {
+	switch dec {
 	case decisionlog.DecisionAllow, decisionlog.DecisionObserve:
-		return Response{Verdict: VerdictAllow, Host: host, Reason: entry.Reason}, entry
-	case decisionlog.DecisionDeny:
-		return Response{Verdict: VerdictDrop, Host: host, Reason: entry.Reason}, entry
+		return VerdictAllow
 	default:
-		reason := invalidDecisionReason(entry.Decision)
+		return VerdictDrop
+	}
+}
+
+func logEntryForDecision(dec decisionlog.Decision, entry decisionlog.Entry) decisionlog.Entry {
+	switch dec {
+	case decisionlog.DecisionAllow, decisionlog.DecisionObserve, decisionlog.DecisionDeny:
+		return entry
+	default:
 		entry.Decision = decisionlog.DecisionDeny
 		entry.Action = string(decisionlog.DecisionDeny)
-		entry.Reason = reason
-		return Response{Verdict: VerdictDrop, Host: host, Reason: reason}, entry
+		entry.Reason = invalidDecisionReason(dec)
+		return entry
 	}
 }
 
@@ -225,15 +288,26 @@ func isTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-func (s *Server) writeResponse(conn net.Conn, response Response) {
-	_ = conn.SetWriteDeadline(time.Now().Add(s.frameDeadline()))
-	_ = EncodeResponse(conn, response)
-	_ = conn.SetWriteDeadline(time.Time{})
+func (s *Server) writeResponse(conn net.Conn, response Response) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(s.responseWriteTimeout())); err != nil {
+		return err
+	}
+	if err := EncodeResponse(conn, response); err != nil {
+		return err
+	}
+	return conn.SetWriteDeadline(time.Time{})
 }
 
-func (s *Server) frameDeadline() time.Duration {
+func (s *Server) requestReadTimeout() time.Duration {
 	if s.FrameDeadline > 0 {
 		return s.FrameDeadline
 	}
-	return defaultBridgeFrameDeadline
+	return requestReadTimeout
+}
+
+func (s *Server) responseWriteTimeout() time.Duration {
+	if s.FrameDeadline > 0 {
+		return s.FrameDeadline
+	}
+	return responseWriteTimeout
 }

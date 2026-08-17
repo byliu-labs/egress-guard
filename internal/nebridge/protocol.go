@@ -31,8 +31,8 @@ type Request struct {
 type Verdict uint8
 
 const (
-	VerdictAllow Verdict = 0
-	VerdictDrop  Verdict = 1
+	VerdictDrop  Verdict = 0
+	VerdictAllow Verdict = 1
 )
 
 // Response is the daemon's decision for a bridge request.

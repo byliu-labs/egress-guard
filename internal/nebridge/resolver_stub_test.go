@@ -1,4 +1,4 @@
-//go:build nebridge_testing
+//go:build !nebridge_testing
 
 package nebridge
 
@@ -7,7 +7,7 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
-// StubResolver returns a fixed identity. Err forces resolution to fail.
+// StubResolver returns a fixed identity for tests in default builds.
 type StubResolver struct {
 	Proc procid.ProcInfo
 	Sig  signature.SignedIdentity

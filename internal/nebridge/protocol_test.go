@@ -58,6 +58,15 @@ func TestResponse_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestVerdictZeroValueDrops(t *testing.T) {
+	if Verdict(0) != VerdictDrop {
+		t.Fatalf("zero-value verdict = %v, want drop so zeroed provider buffers cannot allow", Verdict(0))
+	}
+	if VerdictAllow == VerdictDrop {
+		t.Fatal("allow and drop verdicts must be distinct")
+	}
+}
+
 func TestResponse_RejectsUnsupportedAskVerdict(t *testing.T) {
 	err := EncodeResponse(&bytes.Buffer{}, Response{Verdict: Verdict(2)})
 	if err == nil {
