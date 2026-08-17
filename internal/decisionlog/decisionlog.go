@@ -64,6 +64,11 @@ type Entry struct {
 	ExeSHA256 string    `json:"exe_sha256,omitempty"`
 	TeamID    string    `json:"team_id,omitempty"`
 	SigValid  bool      `json:"sig_valid,omitempty"`
+	// UserActive records whether a human had used the keyboard or mouse in the
+	// last few minutes when this connection was adjudicated. Absent means the
+	// idle state could not be determined, never that the user was idle. It is
+	// local decision-log metadata, not part of the telemetry payload.
+	UserActive *bool `json:"user_active,omitempty"`
 	// Persistence is best-effort enrichment from the daemon write path.
 	// nil means attribution was not attempted or failed, not "no persistence".
 	Persistence *persist.Source `json:"persistence,omitempty"`

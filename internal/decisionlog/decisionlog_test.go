@@ -11,6 +11,39 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/persist"
 )
 
+func TestEntry_UserActiveRoundTrips(t *testing.T) {
+	yes := true
+	no := false
+	for name, want := range map[string]*bool{"active": &yes, "idle": &no, "unknown": nil} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(Entry{Timestamp: "2026-08-17T03:14:00Z", UserActive: want})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got Entry
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatal(err)
+			}
+			if (got.UserActive == nil) != (want == nil) {
+				t.Fatalf("UserActive nil-ness changed: got %v want %v", got.UserActive, want)
+			}
+			if want != nil && *got.UserActive != *want {
+				t.Errorf("UserActive = %v, want %v", *got.UserActive, *want)
+			}
+		})
+	}
+}
+
+func TestEntry_UnknownUserActiveIsOmitted(t *testing.T) {
+	encoded, err := json.Marshal(Entry{Timestamp: "2026-08-17T03:14:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "user_active") {
+		t.Errorf("unknown idle state must be omitted, got %s", encoded)
+	}
+}
+
 func TestWriter_WritesJSONLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "decisions.log")
