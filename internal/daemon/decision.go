@@ -103,6 +103,7 @@ func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int6
 		PID:        entry.PID,
 		Exe:        entry.Exe,
 		Comm:       entry.Comm,
+		ExeSHA256:  entry.ExeSHA256,
 		TeamID:     entry.TeamID,
 		BytesUp:    up,
 		BytesDown:  down,

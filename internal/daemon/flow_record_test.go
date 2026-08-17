@@ -53,8 +53,18 @@ func TestAllowedConnection_WritesCorrelatedFlowRecord(t *testing.T) {
 	if flow.BytesDown == 0 {
 		t.Error("bytes_down = 0, want bytes returned from upstream")
 	}
+	// Every field drift.identityKey is built from must survive onto the flow
+	// record, or the pair cannot be scored per (identity, host) without a join.
 	if flow.Host != decision.Host || flow.Exe != decision.Exe {
 		t.Error("flow record lost the identity/host of its decision; it cannot be scored per (identity, host)")
+	}
+	if flow.ExeSHA256 != decision.ExeSHA256 {
+		t.Errorf("flow exe_sha256 = %q, want %q: drift keys on the hash first, so a flow "+
+			"record without it buckets under a phantom empty-hash identity",
+			flow.ExeSHA256, decision.ExeSHA256)
+	}
+	if flow.TeamID != decision.TeamID {
+		t.Errorf("flow team_id = %q, want %q", flow.TeamID, decision.TeamID)
 	}
 	if flow.DurationMS < 0 {
 		t.Errorf("duration_ms = %d", flow.DurationMS)
