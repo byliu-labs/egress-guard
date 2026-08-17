@@ -60,7 +60,7 @@ type Event struct {
 
 const minStableDays = 2
 
-const baselineSchemaVersion = 1
+const baselineSchemaVersion = 2
 
 const (
 	rankNeverHit         = 4
@@ -96,7 +96,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 	var latest time.Time
 
 	for _, e := range entries {
-		if e.Decision == decisionlog.DecisionDeny {
+		if !foldsIntoBaseline(e) {
 			continue
 		}
 		id := identityKey(identityFromEntry(e))
@@ -125,6 +125,10 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 	}
 	b.builtThrough = latest
 	return b
+}
+
+func foldsIntoBaseline(e decisionlog.Entry) bool {
+	return !e.IsFlow() && e.Decision != decisionlog.DecisionDeny
 }
 
 // Classify scores one decision-log entry against the baseline. It ignores the
@@ -157,7 +161,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 			ev.Rank = rankNeverHit
 			return ev
 		}
-		if match.Found {
+		if match.Found && match.Authoritative {
 			ev.Class = ClassKnown
 			return ev
 		}
@@ -207,6 +211,9 @@ func (b *Baseline) BuiltThrough() time.Time {
 // IsStale reports whether entries contain traffic newer than this baseline.
 func (b *Baseline) IsStale(entries []decisionlog.Entry) bool {
 	for _, e := range entries {
+		if !foldsIntoBaseline(e) {
+			continue
+		}
 		ts, err := time.Parse(time.RFC3339, e.Timestamp)
 		if err == nil && ts.After(b.builtThrough) {
 			return true
@@ -289,11 +296,11 @@ func identityFromEntry(e decisionlog.Entry) catalog.Identity {
 	if base == "" || base == "." {
 		base = e.Comm
 	}
-	return catalog.Identity{ExeBasename: base, TeamID: e.TeamID}
+	return catalog.Identity{ExeBasename: base, ExeSHA256: e.ExeSHA256, TeamID: e.TeamID}
 }
 
 func identityKey(id catalog.Identity) string {
-	return id.TeamID + "\x00" + id.ExeBasename
+	return id.ExeSHA256 + "\x00" + id.TeamID + "\x00" + id.ExeBasename
 }
 
 func hostKey(host string) string {

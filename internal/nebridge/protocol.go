@@ -31,9 +31,8 @@ type Request struct {
 type Verdict uint8
 
 const (
-	VerdictAllow Verdict = 0
-	VerdictDrop  Verdict = 1
-	VerdictAsk   Verdict = 2
+	VerdictDrop  Verdict = 0
+	VerdictAllow Verdict = 1
 )
 
 // Response is the daemon's decision for a bridge request.
@@ -165,7 +164,7 @@ func DecodeResponse(r io.Reader) (Response, error) {
 }
 
 func (v Verdict) valid() bool {
-	return v == VerdictAllow || v == VerdictDrop || v == VerdictAsk
+	return v == VerdictAllow || v == VerdictDrop
 }
 
 func writeAll(w io.Writer, data []byte) error {

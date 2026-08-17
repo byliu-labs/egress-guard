@@ -13,8 +13,8 @@ the bar below before merge.
 
 An allowlist says "reach this host." A catalog entry says more: "this specific,
 verified process identity legitimately reaches this host, and here is why."
-That distinction matters because a catalog entry is a fact the daemon can act
-on silently, while an unverified guess must stay a prompt.
+That distinction matters because a pinned catalog entry is a fact the daemon
+can act on silently, while an unpinned entry can only explain the prompt.
 
 A catalog fact is deterministic and evidence-backed. A model opinion from a
 future explainer is advisory and cannot become a catalog fact without a human
@@ -56,31 +56,40 @@ why  = "Chrome component and extension updates"
 | `evidence` | yes | A sentence describing why this is trusted: a signature you verified, vendor documentation, or a published Team ID list. "It seemed to work" is not evidence. |
 | `explanation` | yes | The plain-English sentence a drift prompt shows the user. Write it for someone who has never heard of this process. |
 | `never` | no | Hostnames this identity should never reach. This turns the entry into an anomaly detector for a legitimate identity contacting an illegitimate destination. |
-| `entry.identity.bundle_id` | conditional | At least one of `bundle_id` or `exe_basename` is required. `bundle_id`, when present, is the strongest identity match key. |
-| `entry.identity.team_id` | no | Narrows either a `bundle_id` or `exe_basename` match to a specific signing team. |
-| `entry.identity.exe_basename` | conditional | At least one of `bundle_id` or `exe_basename` is required. A basename is easy to spoof, so see the confidence rule below. |
+| `entry.identity.exe_sha256` | no | SHA-256 of the executable bytes. When present, the runtime binary hash must match exactly. |
+| `entry.identity.bundle_id` | no | Bundle identifier. When present, the runtime bundle ID must match exactly. |
+| `entry.identity.team_id` | no | Signing team identifier. When present, the runtime signing team must match exactly. |
+| `entry.identity.exe_basename` | conditional | At least one identity field is required. Basenames are useful prompt labels, but baseline/pro basename-only entries cannot silently allow traffic. |
 | `entry.identity.signed_required` | no | Hint that this identity should only ever appear signed; reserved for future enforcement. |
 | `entry.expected_destinations[].host` | no | Hostnames this identity legitimately contacts. `Lookup` only reports a found expected destination when the queried host is explicitly listed. |
 | `entry.expected_destinations[].why` | no | One-line reason for the destination. |
 
 ## Confidence Floor
 
-An identity anchored only by `exe_basename`, with no `team_id` and no
-`bundle_id`, cannot carry `confidence = "high"`. Renaming a binary to match a
-basename costs an attacker nothing. Forging a Developer ID or Team ID signature
-does not. The loader rejects a name-only entry claiming `high` at parse time.
-Confidence is descriptive provenance, not a decision gate: `medium` and `high`
-catalog hits are both acted on silently by the daemon. The trust boundary is the
-signed catalog artifact plus the entry's explicit destination list.
+An identity anchored only by `exe_basename`, with no `exe_sha256`, `team_id`,
+or `bundle_id`, cannot produce a silent daemon allow from the `baseline` or
+`pro` layers. Renaming a binary to match a basename costs an attacker nothing.
+Forging a binary hash, Developer ID, or bundle ID match does not.
+
+The loader still accepts name-only `medium` entries so prompts can carry human
+curated explanations for common tools. `Lookup` therefore reports two separate
+facts: whether an entry was found for prompt context, and whether that entry is
+authoritative enough to decide without asking. Confidence is descriptive
+provenance, not a decision gate. The daemon's trust boundary for catalog allows
+is a signed catalog artifact plus an explicit destination list plus an identity
+pin. The local `user` layer records explicit user ratifications, but a hashless
+ratification is still prompt context only; uncertainty must not become silent
+authority.
 
 ## Match Rules
 
-Lookup uses the same precedence as the exemption catalog:
+Lookup uses conjunctive identity fields:
 
-1. If the entry sets `bundle_id`, it must match the query `bundle_id`.
-2. If the entry also sets `team_id`, that must match too.
-3. If the entry does not set `bundle_id`, `exe_basename` is used as fallback.
-4. If the fallback entry also sets `team_id`, that must match too.
+1. Every identity field set by the entry must match the runtime identity.
+2. If the entry sets none of `exe_sha256`, `team_id`, or `bundle_id`, it may be
+   found for prompt context but is not authoritative unless it is in the local
+   `user` layer.
+3. If the entry also sets `exe_basename`, that basename must match too.
 
 Host matching is exact after lowercasing and trimming one trailing dot. Version
 1 has no wildcard or suffix matching.

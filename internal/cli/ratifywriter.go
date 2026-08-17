@@ -31,25 +31,28 @@ func (w *catalogRatifyWriter) Ratify(e catalog.Entry) error {
 		return fmt.Errorf("ratifywriter: mkdir: %w", err)
 	}
 
-	onDisk, err := catalog.LoadFile(w.path)
+	onDisk, err := catalog.LoadLayerFile("user", w.path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("ratifywriter: read %s: %w", w.path, err)
 		}
 		onDisk = &catalog.Catalog{}
 	}
-	if err := onDisk.Add(e); err != nil {
+	added, err := onDisk.AddIfAbsent(e)
+	if err != nil {
 		return fmt.Errorf("ratifywriter: validate entry: %w", err)
 	}
-	b, err := onDisk.Marshal()
-	if err != nil {
-		return fmt.Errorf("ratifywriter: marshal: %w", err)
-	}
-	if err := writeCatalogAtomic(w.path, b); err != nil {
-		return err
+	if added {
+		b, err := onDisk.Marshal()
+		if err != nil {
+			return fmt.Errorf("ratifywriter: marshal: %w", err)
+		}
+		if err := writeCatalogAtomic(w.path, b); err != nil {
+			return err
+		}
 	}
 	if w.cat != nil {
-		if err := w.cat.Add(e); err != nil {
+		if _, err := w.cat.AddIfAbsent(e); err != nil {
 			return fmt.Errorf("ratifywriter: update live catalog: %w", err)
 		}
 	}

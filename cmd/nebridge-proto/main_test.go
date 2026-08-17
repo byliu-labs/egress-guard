@@ -123,6 +123,27 @@ func TestNebridgeProto_DefaultSocketDirectoryCanBeCreatedPrivate(t *testing.T) {
 	}
 }
 
+func TestNebridgeProto_DefaultSocketPathStartsInFreshHome(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("non-root default path is not used when running as root")
+	}
+	home, err := os.MkdirTemp("/tmp", "nb-home-")
+	if err != nil {
+		t.Fatalf("create short HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	defaultSocket, err := defaultSocketPath()
+	if err != nil {
+		t.Fatalf("defaultSocketPath: %v", err)
+	}
+	listener, err := nebridge.Listen(defaultSocket)
+	if err != nil {
+		t.Fatalf("listen on default socket path in fresh HOME: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+}
+
 func TestNebridgeProto_UsesBaselineCatalog(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := buildProto(t, tempDir)
@@ -145,6 +166,7 @@ explanation = "test fixture"
 
 [entry.identity]
 exe_basename = "nebridge-proto-test"
+team_id = "TESTTEAM"
 
 [[entry.expected_destinations]]
 host = "catalog.localhost"

@@ -1,10 +1,15 @@
 package daemon
 
 import (
+	"container/list"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -47,11 +52,20 @@ func entryFor(decision decisionlog.Decision, reason, host string, pi procid.Proc
 }
 
 func entryForWithoutPersistence(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
-	return decisionlog.Entry{
+	return entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, true)
+}
+
+func entryForWithoutPersistenceNoHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
+	return entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, false)
+}
+
+func entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier, includeHash bool) decisionlog.Entry {
+	entry := decisionlog.Entry{
 		Decision:  decision,
 		Action:    string(decision),
 		Reason:    reason,
 		TrustTier: tier,
+		ConnID:    newConnID(),
 		Host:      host,
 		PID:       pi.PID,
 		PPID:      pi.PPID,
@@ -63,6 +77,39 @@ func entryForWithoutPersistence(decision decisionlog.Decision, reason, host stri
 		TeamID:    sig.TeamID,
 		SigValid:  sig.Valid,
 	}
+	if includeHash {
+		entry.ExeSHA256 = exeSHA256(pi.Exe)
+	}
+	return entry
+}
+
+// writeFlow records how a connection actually behaved, once it has closed. It
+// reuses the decision record's identity and destination so the pair can be
+// scored without a join, and carries only counts and elapsed time — never
+// payload. PHILOSOPHY.md §4.8.
+func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int64, started time.Time) {
+	if connID == "" {
+		return
+	}
+	flow := decisionlog.Entry{
+		Timestamp:  timeNow().UTC().Format(time.RFC3339),
+		Kind:       decisionlog.KindFlow,
+		ConnID:     connID,
+		Decision:   entry.Decision,
+		Action:     entry.Action,
+		Host:       entry.Host,
+		DestIP:     entry.DestIP,
+		DestPort:   entry.DestPort,
+		PID:        entry.PID,
+		Exe:        entry.Exe,
+		Comm:       entry.Comm,
+		ExeSHA256:  entry.ExeSHA256,
+		TeamID:     entry.TeamID,
+		BytesUp:    up,
+		BytesDown:  down,
+		DurationMS: timeNow().Sub(started).Milliseconds(),
+	}
+	_ = d.opts.Log.Write(flow)
 }
 
 type persistenceKey struct {
@@ -111,7 +158,7 @@ func attributePersistence(pi procid.ProcInfo) *persist.Source {
 // is robust if the fast-path ever gets refactored.
 func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionOutcome, decisionlog.Entry) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
-		return outcomeExempt, entryForWithoutPersistence(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
+		return outcomeExempt, entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
 	}
 	switch d.opts.Allow.Decide(host) {
 	case allowlist.Allow:
@@ -129,7 +176,7 @@ func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig
 			if match.NeverHit {
 				return outcomeDeny, entryFor(decisionlog.DecisionDeny, "catalog_never_hit", host, pi, sig, decisionlog.TierCatalogFact)
 			}
-			if match.Found {
+			if match.Found && match.Authoritative {
 				if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
 					return outcome, entry
 				}
@@ -170,21 +217,94 @@ func identityFor(pi procid.ProcInfo, sig signature.SignedIdentity) catalog.Ident
 	if base == "" || base == "." {
 		base = pi.Comm
 	}
-	return catalog.Identity{ExeBasename: base, TeamID: sig.TeamID, BundleID: sig.BundleID}
+	return catalog.Identity{ExeBasename: base, ExeSHA256: exeSHA256(pi.Exe), TeamID: sig.TeamID, BundleID: sig.BundleID}
+}
+
+func exeSHA256(path string) string {
+	if path == "" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	key := executableCacheKey(path, info)
+
+	exeHashMu.Lock()
+	if elem, ok := exeHashIndex[key]; ok {
+		exeHashLRU.MoveToFront(elem)
+		sum := elem.Value.(*exeHashEntry).sum
+		exeHashMu.Unlock()
+		return sum
+	}
+	exeHashMu.Unlock()
+
+	sum := hashExecutable(path)
+	if sum == "" {
+		return ""
+	}
+
+	exeHashMu.Lock()
+	defer exeHashMu.Unlock()
+	if elem, ok := exeHashIndex[key]; ok {
+		exeHashLRU.MoveToFront(elem)
+		return elem.Value.(*exeHashEntry).sum
+	}
+	ent := &exeHashEntry{key: key, sum: sum}
+	elem := exeHashLRU.PushFront(ent)
+	exeHashIndex[key] = elem
+	if exeHashLRU.Len() > maxExeHashCacheEntries {
+		oldest := exeHashLRU.Back()
+		exeHashLRU.Remove(oldest)
+		delete(exeHashIndex, oldest.Value.(*exeHashEntry).key)
+	}
+	return sum
+}
+
+const maxExeHashCacheEntries = 256
+
+type exeHashEntry struct {
+	key string
+	sum string
+}
+
+var (
+	exeHashMu      sync.Mutex
+	exeHashLRU     = list.New()
+	exeHashIndex   = map[string]*list.Element{}
+	hashExecutable = hashExecutableFile
+)
+
+func hashExecutableFile(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func baseExecutableCacheKey(path string, info os.FileInfo) string {
+	return path + "\x00mtime=" + info.ModTime().UTC().Format(time.RFC3339Nano) + "\x00size=" + strconv.FormatInt(info.Size(), 10)
 }
 
 func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) drift.Event {
 	entry := decisionlog.Entry{
-		Host:     host,
-		Exe:      pi.Exe,
-		Comm:     pi.Comm,
-		PName:    pi.PComm,
-		TeamID:   sig.TeamID,
-		SigValid: sig.Valid,
-		PID:      pi.PID,
-		PPID:     pi.PPID,
-		Argv:     pi.Argv,
-		Cwd:      pi.Cwd,
+		Host:      host,
+		Exe:       pi.Exe,
+		Comm:      pi.Comm,
+		PName:     pi.PComm,
+		ExeSHA256: id.ExeSHA256,
+		TeamID:    sig.TeamID,
+		SigValid:  sig.Valid,
+		PID:       pi.PID,
+		PPID:      pi.PPID,
+		Argv:      pi.Argv,
+		Cwd:       pi.Cwd,
 	}
 	if b := d.baseline.Load(); b != nil {
 		return b.Classify(entry)
@@ -242,18 +362,20 @@ func (d *Daemon) handle(conn net.Conn) {
 
 	// Exempt fast-path: do not parse SNI, do not consult allowlist.
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
-		upstream, err := net.Dial("tcp", net.JoinHostPort(dstIP.String(), itoa(dstPort)))
+		upstream, err := d.dial("tcp", net.JoinHostPort(dstIP.String(), itoa(dstPort)))
 		if err != nil {
-			entry := entryForWithoutPersistence(decisionlog.DecisionDeny, "exempt_upstream_dial_failed: "+err.Error(), "", pi, sig, "")
+			entry := entryForWithoutPersistenceNoHash(decisionlog.DecisionDeny, "exempt_upstream_dial_failed: "+err.Error(), "", pi, sig, "")
 			entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 			_ = d.opts.Log.Write(entry)
 			return
 		}
-		entry := entryForWithoutPersistence(decisionlog.DecisionAllow, "exempt_app", "", pi, sig, "")
+		entry := entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", "", pi, sig, "")
 		entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 		_ = d.opts.Log.Write(entry)
 		conn.SetReadDeadline(timeZero())
-		spliceBoth(conn, upstream)
+		started := timeNow()
+		up, down := spliceBoth(conn, upstream)
+		d.writeFlow(entry.ConnID, entry, up, down, started)
 		return
 	}
 
@@ -290,7 +412,7 @@ func (d *Daemon) handle(conn net.Conn) {
 
 	switch outcome {
 	case outcomeAllow:
-		upstream, err := net.Dial("tcp", net.JoinHostPort(dstIP.String(), itoa(dstPort)))
+		upstream, err := d.dial("tcp", net.JoinHostPort(dstIP.String(), itoa(dstPort)))
 		if err != nil {
 			if d.opts.ObserveOnly {
 				if entry.Reason != "" {
@@ -310,10 +432,24 @@ func (d *Daemon) handle(conn net.Conn) {
 		// Replay the bytes we already read from the client to the upstream.
 		if _, err := upstream.Write(buf[:n]); err != nil {
 			upstream.Close()
+			if d.opts.ObserveOnly {
+				if entry.Reason != "" {
+					entry.Reason = "net_error: upstream_write_failed after " + entry.Reason + ": " + err.Error()
+				} else {
+					entry.Reason = "net_error: upstream_write_failed: " + err.Error()
+				}
+			} else {
+				entry.Action = "deny"
+				entry.Decision = decisionlog.DecisionDeny
+				entry.Reason = "upstream_write_failed: " + err.Error()
+			}
+			_ = d.opts.Log.Write(entry)
 			return
 		}
 		_ = d.opts.Log.Write(entry)
-		spliceBoth(conn, upstream)
+		started := timeNow()
+		up, down := spliceBoth(conn, upstream)
+		d.writeFlow(entry.ConnID, entry, up, down, started)
 	default: // outcomeDeny (outcomeExempt is handled by fast-path above)
 		_ = d.opts.Log.Write(entry)
 		// Close → TCP RST/FIN to client; client's TLS handshake fails.

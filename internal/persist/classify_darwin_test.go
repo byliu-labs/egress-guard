@@ -4,21 +4,11 @@ package persist
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 )
 
-func requireCommand(t *testing.T, name string, args ...string) {
-	t.Helper()
-	if err := exec.Command(name, args...).Run(); err != nil {
-		t.Skipf("%s unavailable in this test environment: %v", name, err)
-	}
-}
-
 func TestAncestorChain_IncludesSelf(t *testing.T) {
-	requireCommand(t, "ps", "-axo", "pid=,ppid=,comm=")
-
 	chain, err := ancestorChain(os.Getpid(), os.Getppid())
 	if err != nil {
 		skipHostProcessDenied(t, err)
@@ -34,8 +24,6 @@ func TestAncestorChain_IncludesSelf(t *testing.T) {
 }
 
 func TestAncestorChain_BoundedDepth(t *testing.T) {
-	requireCommand(t, "ps", "-axo", "pid=,ppid=,comm=")
-
 	chain, err := ancestorChain(os.Getpid(), os.Getppid())
 	if err != nil {
 		skipHostProcessDenied(t, err)
@@ -47,8 +35,6 @@ func TestAncestorChain_BoundedDepth(t *testing.T) {
 }
 
 func TestLaunchdPIDLabels_NoError(t *testing.T) {
-	requireCommand(t, "launchctl", "list")
-
 	labels, err := launchdPIDLabels()
 	if err != nil {
 		skipHostProcessDenied(t, err)
@@ -68,7 +54,8 @@ func TestLaunchdPIDLabels_NoError(t *testing.T) {
 func skipHostProcessDenied(t *testing.T, err error) {
 	t.Helper()
 	msg := err.Error()
-	if strings.Contains(msg, "operation not permitted") || strings.Contains(msg, "launchctl list: exit status 1") {
+	if strings.Contains(msg, "operation not permitted") ||
+		(strings.Contains(msg, "launchctl list: exit status 1") && os.Getenv("CODEX_SANDBOX") != "") {
 		t.Skipf("host process inspection blocked by sandbox: %v", err)
 	}
 }

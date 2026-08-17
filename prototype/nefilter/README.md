@@ -51,7 +51,7 @@ enforcement point. The provider MUST resolve every one of the following to
 | Bridge closes the connection without responding | `.drop()` |
 | Response frame fails to decode | `.drop()` |
 | No response within the provider's verdict deadline | `.drop()` |
-| Response verdict byte is any value other than `0` (allow) | `.drop()` |
+| Response verdict byte is any value other than `1` (allow) | `.drop()` |
 
 Rationale: `PHILOSOPHY.md` section 4.3 says unsure fails toward the human,
 never toward allow. There is no human in this path, so unsure fails toward deny.

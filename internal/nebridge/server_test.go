@@ -1,13 +1,16 @@
 package nebridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -140,8 +143,8 @@ func TestServer_IdleRequestDeadlineLogsDeny(t *testing.T) {
 	if entry.Decision != decisionlog.DecisionDeny {
 		t.Fatalf("logged decision = %q, want deny", entry.Decision)
 	}
-	if !strings.Contains(entry.Reason, "i/o timeout") {
-		t.Fatalf("Reason = %q, want timeout", entry.Reason)
+	if !strings.HasPrefix(entry.Reason, "idle_request_timeout:") {
+		t.Fatalf("Reason = %q, want idle_request_timeout prefix", entry.Reason)
 	}
 }
 
@@ -301,6 +304,121 @@ func TestValidateSocketDirectory_RejectsWrongOwner(t *testing.T) {
 	err := validateSocketDirectory("/tmp/unsafe", info)
 	if err == nil || !strings.Contains(err.Error(), "is owned by euid") {
 		t.Fatalf("validateSocketDirectory error = %v, want owner rejection", err)
+	}
+}
+
+func TestServer_CancelClosesActiveConnectionAndReturns(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "decisions.log")
+	log, err := decisionlog.Open(logPath)
+	if err != nil {
+		t.Fatalf("open decision log: %v", err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	decider, err := daemon.New(daemon.Options{
+		Listen: "127.0.0.1:0",
+		Kernel: kernel.Default(),
+		Allow: allowlist.New(allowlist.Config{
+			Defaults: allowlist.Layer{Allow: []string{"allow.example"}},
+		}),
+		Log: log,
+	})
+	if err != nil {
+		t.Fatalf("new daemon: %v", err)
+	}
+	path := testSocketPath(t)
+	ln, err := Listen(path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- (&Server{Decider: decider, Resolver: StubResolver{}, Log: log}).Serve(ctx, ln)
+	}()
+
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	defer conn.Close()
+	stop := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := EncodeRequest(conn, Request{
+				DstIP:       net.ParseIP("203.0.113.10"),
+				DstPort:     443,
+				AuditToken:  [32]byte{1},
+				ClientHello: clientHelloForHost("allow.example"),
+			}); err != nil {
+				return
+			}
+			if _, err := DecodeResponse(conn); err != nil {
+				return
+			}
+		}
+	}()
+
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		close(stop)
+		_ = conn.Close()
+		_ = ln.Close()
+		<-writerDone
+		if err := <-serveDone; err != nil {
+			t.Logf("Serve after forced cleanup: %v", err)
+		}
+		t.Fatal("Serve did not return after cancellation while an active client kept sending requests")
+	}
+	close(stop)
+	<-writerDone
+}
+
+func TestServer_ResponseWriteFailureClosesStream(t *testing.T) {
+	var request bytes.Buffer
+	if err := EncodeRequest(&request, Request{
+		DstIP:       net.ParseIP("203.0.113.10"),
+		DstPort:     443,
+		AuditToken:  [32]byte{1},
+		ClientHello: clientHelloForHost("unknown.example"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conn := newWriteFailConn(request.Bytes())
+	server := &Server{
+		Decider: entryDecider{entry: decisionlog.Entry{
+			Decision: decisionlog.DecisionDeny,
+			Action:   string(decisionlog.DecisionDeny),
+			Reason:   "host_unknown_no_prompt",
+		}},
+		Resolver:      StubResolver{},
+		Log:           &decisionlog.Writer{},
+		FrameDeadline: time.Second,
+	}
+	done := make(chan struct{})
+	go func() {
+		server.handleConn(conn)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		_ = conn.Close()
+		<-done
+		t.Fatal("handleConn kept reading after response write failure")
 	}
 }
 
@@ -523,3 +641,49 @@ func waitFor(t *testing.T, fn func() bool) {
 	}
 	t.Fatal("condition not met within 2s")
 }
+
+type writeFailConn struct {
+	mu     sync.Mutex
+	input  *bytes.Reader
+	closed chan struct{}
+}
+
+func newWriteFailConn(input []byte) *writeFailConn {
+	return &writeFailConn{input: bytes.NewReader(input), closed: make(chan struct{})}
+}
+
+func (c *writeFailConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	if c.input.Len() > 0 {
+		n, err := c.input.Read(p)
+		c.mu.Unlock()
+		return n, err
+	}
+	c.mu.Unlock()
+	<-c.closed
+	return 0, io.EOF
+}
+
+func (c *writeFailConn) Write([]byte) (int, error) {
+	return 0, errors.New("forced write failure")
+}
+
+func (c *writeFailConn) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+func (c *writeFailConn) LocalAddr() net.Addr              { return stubAddr("local") }
+func (c *writeFailConn) RemoteAddr() net.Addr             { return stubAddr("remote") }
+func (c *writeFailConn) SetDeadline(time.Time) error      { return nil }
+func (c *writeFailConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *writeFailConn) SetWriteDeadline(time.Time) error { return nil }
+
+type stubAddr string
+
+func (a stubAddr) Network() string { return string(a) }
+func (a stubAddr) String() string  { return string(a) }

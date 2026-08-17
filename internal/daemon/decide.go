@@ -19,12 +19,24 @@ func (d *Daemon) finalizeOutcome(outcome decisionOutcome, entry decisionlog.Entr
 	return outcome, entry
 }
 
+func decisionForOutcome(outcome decisionOutcome, entry decisionlog.Entry) decisionlog.Decision {
+	if entry.Decision == decisionlog.DecisionObserve {
+		return decisionlog.DecisionObserve
+	}
+	switch outcome {
+	case outcomeAllow, outcomeExempt:
+		return decisionlog.DecisionAllow
+	default:
+		return decisionlog.DecisionDeny
+	}
+}
+
 // Decide runs the same decision engine as handle without the pf/splice I/O
 // path. It returns both the authoritative decision and the log entry describing
 // it. Callers enforce on the returned Decision, not by re-reading a field from
 // the entry.
 func (d *Daemon) Decide(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionlog.Decision, decisionlog.Entry) {
 	outcome, entry := d.decideBranch(host, dstIP, pi, sig)
-	_, entry = d.finalizeOutcome(outcome, entry)
-	return entry.Decision, entry
+	outcome, entry = d.finalizeOutcome(outcome, entry)
+	return decisionForOutcome(outcome, entry), entry
 }

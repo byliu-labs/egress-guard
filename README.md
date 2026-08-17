@@ -157,7 +157,7 @@ sudo egress-guard uninstall     # removes the pf anchor
 | `egress-guard allow <host>` | Adds a host to the user allowlist. Repeatable. |
 | `egress-guard deny <host>` | Adds a host to the user denylist. Repeatable. |
 | `egress-guard tail` | Follows the JSONL block log live. |
-| `egress-guard catalog fetch --pubkey <path>` | Fetches and installs a signed public baseline catalog. Unsigned remote catalogs are refused. |
+| `egress-guard catalog fetch [--system] [--pubkey <path>]` | Fetches and installs a signed public baseline catalog. Use `sudo egress-guard catalog fetch --system` for boot-resident daemon installs; unsigned remote catalogs are refused. |
 | `egress-guard version` | Prints the version string. |
 
 Hostname patterns support three forms:
@@ -173,6 +173,8 @@ Hostname patterns support three forms:
 |---|---|
 | (embedded) | Bundled default allowlist — LLM APIs, package registries, code hosting, cloud auth, captive-portal probes |
 | `~/.config/egress-guard/allowlist.toml` | User-global overrides; the `allow` / `deny` subcommands write here |
+| `~/.config/egress-guard/catalog-baseline.toml` | Signed baseline catalog for foreground/user-mode runs |
+| `/var/db/egress-guard/.config/egress-guard/catalog-baseline.toml` | Signed baseline catalog for the boot-resident daemon; update with `sudo egress-guard catalog fetch --system` |
 | `~/.local/state/egress-guard/blocked.log` | JSONL append-only decision log |
 | `/etc/pf.anchors/egress-guard` | The pf anchor file — managed automatically by `install` / `uninstall`, do not hand-edit |
 | `~/Library/LaunchAgents/com.byliu.egress-guard.plist` | The LaunchAgent for auto-start at login |

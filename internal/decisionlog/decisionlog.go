@@ -1,5 +1,5 @@
 // Package decisionlog records every egress decision the daemon adjudicates
-// — allow, deny, observe, or ask — as one JSON object per line.
+// — allow, deny, or observe — as one JSON object per line.
 package decisionlog
 
 import (
@@ -20,7 +20,6 @@ const (
 	DecisionAllow   Decision = "allow"
 	DecisionDeny    Decision = "deny"
 	DecisionObserve Decision = "observe"
-	DecisionAsk     Decision = "ask"
 )
 
 // TrustTier records how a Decision was reached.
@@ -31,6 +30,17 @@ const (
 	TierPrompt       TrustTier = "prompt"
 	TierDefault      TrustTier = "default"
 	TierModelOpinion TrustTier = "model_opinion"
+)
+
+// Kind separates the two record shapes that share this log. A decision record
+// is written when the daemon adjudicates a connection; a flow record is
+// written when that same connection closes, correlated by ConnID. Old records
+// have no kind and are decisions by construction.
+type Kind string
+
+const (
+	KindDecision Kind = "decision"
+	KindFlow     Kind = "flow"
 )
 
 // Entry is one decision record. Old blocklog fields keep their JSON tags for
@@ -51,11 +61,41 @@ type Entry struct {
 	Host      string    `json:"host,omitempty"`
 	DestIP    string    `json:"dest_ip,omitempty"`
 	DestPort  int       `json:"dest_port,omitempty"`
+	ExeSHA256 string    `json:"exe_sha256,omitempty"`
 	TeamID    string    `json:"team_id,omitempty"`
 	SigValid  bool      `json:"sig_valid,omitempty"`
 	// Persistence is best-effort enrichment from the daemon write path.
 	// nil means attribution was not attempted or failed, not "no persistence".
 	Persistence *persist.Source `json:"persistence,omitempty"`
+	// Kind is empty on records written before flow records existed; treat
+	// empty as KindDecision.
+	Kind   Kind   `json:"kind,omitempty"`
+	ConnID string `json:"conn_id,omitempty"`
+	// Encrypted-flow metadata. Counted from io.Copy's return value; no payload
+	// byte is ever read, buffered, or hashed. PHILOSOPHY.md §4.8.
+	BytesUp    int64 `json:"bytes_up,omitempty"`
+	BytesDown  int64 `json:"bytes_down,omitempty"`
+	DurationMS int64 `json:"duration_ms,omitempty"`
+}
+
+// IsFlow reports whether e is a close-time flow record. Records predating
+// flow records have no Kind and are decisions.
+func (e Entry) IsFlow() bool { return e.Kind == KindFlow }
+
+func (e Entry) MarshalJSON() ([]byte, error) {
+	type entryJSON Entry
+	b, err := json.Marshal(entryJSON(e))
+	if err != nil || !e.IsFlow() {
+		return b, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	m["bytes_up"] = e.BytesUp
+	m["bytes_down"] = e.BytesDown
+	m["duration_ms"] = e.DurationMS
+	return json.Marshal(m)
 }
 
 // Writer wraps the underlying file with a mutex for goroutine-safe appends.

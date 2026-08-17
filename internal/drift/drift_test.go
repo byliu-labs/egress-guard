@@ -26,6 +26,29 @@ func TestClassAndReasonValues(t *testing.T) {
 	}
 }
 
+func TestClassify_NonAuthoritativeCatalogContextDoesNotSuppressDrift(t *testing.T) {
+	cat := seedCatalog(t, catalog.Entry{
+		SchemaVersion:        catalog.CurrentSchemaVersion,
+		Identity:             catalog.Identity{ExeBasename: "git"},
+		ExpectedDestinations: []catalog.Destination{{Host: "github.com", Why: "git HTTPS transport"}},
+		Explanation:          "git clones, fetches, and downloads repository assets from GitHub.",
+		Evidence:             "baseline prompt context fixture",
+		Confidence:           catalog.ConfidenceMedium,
+		Layer:                "baseline",
+	})
+	b := BuildBaseline(cat, nil)
+
+	ev := b.Classify(decisionlog.Entry{
+		Timestamp: time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		Decision:  decisionlog.DecisionAllow,
+		Exe:       "/Users/me/Downloads/git",
+		Host:      "github.com",
+	})
+	if ev.Class != ClassDrift || ev.Reason != ReasonNovelIdentity {
+		t.Fatalf("Classify impostor with prompt-only catalog context = class %q reason %q, want drift/novel_identity", ev.Class, ev.Reason)
+	}
+}
+
 func TestIdentityFromEntry(t *testing.T) {
 	tests := []struct {
 		name string
@@ -34,8 +57,8 @@ func TestIdentityFromEntry(t *testing.T) {
 	}{
 		{
 			name: "uses basename of full exe path",
-			e:    decisionlog.Entry{Exe: "/Applications/Slack.app/Contents/MacOS/Slack", TeamID: "TEAMSLACK"},
-			want: catalog.Identity{ExeBasename: "Slack", TeamID: "TEAMSLACK"},
+			e:    decisionlog.Entry{Exe: "/Applications/Slack.app/Contents/MacOS/Slack", ExeSHA256: "abc123", TeamID: "TEAMSLACK"},
+			want: catalog.Identity{ExeBasename: "Slack", ExeSHA256: "abc123", TeamID: "TEAMSLACK"},
 		},
 		{
 			name: "falls back to Comm when Exe is empty",

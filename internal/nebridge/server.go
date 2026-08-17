@@ -35,6 +35,7 @@ type Server struct {
 const (
 	requestReadTimeout   = 5 * time.Second
 	responseWriteTimeout = 2 * time.Second
+	handlerDrainTimeout  = 2 * time.Second
 )
 
 // Listen creates a Unix-domain listener in a private directory owned by this
@@ -60,7 +61,7 @@ func Listen(socketPath string) (net.Listener, error) {
 }
 
 func ensureSocketDirectory(dir string) error {
-	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("nebridge: create socket directory %s: %w", dir, err)
 	}
 	info, err := os.Lstat(dir)
@@ -111,13 +112,22 @@ func removeStaleSocket(socketPath string) error {
 // fails. Each connection carries one or more requests.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	done := make(chan struct{})
+	active := make(map[net.Conn]struct{})
+	var activeMu sync.Mutex
 	var handlers sync.WaitGroup
-	defer handlers.Wait()
 	defer close(done)
+	closeActive := func() {
+		activeMu.Lock()
+		defer activeMu.Unlock()
+		for conn := range active {
+			_ = conn.Close()
+		}
+	}
 	go func() {
 		select {
 		case <-ctx.Done():
 			_ = ln.Close()
+			closeActive()
 		case <-done:
 		}
 	}()
@@ -126,15 +136,38 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				closeActive()
+				return waitForHandlers(&handlers, handlerDrainTimeout)
 			}
 			return fmt.Errorf("nebridge: accept: %w", err)
 		}
+		activeMu.Lock()
+		active[conn] = struct{}{}
+		activeMu.Unlock()
 		handlers.Add(1)
 		go func() {
-			defer handlers.Done()
+			defer func() {
+				activeMu.Lock()
+				delete(active, conn)
+				activeMu.Unlock()
+				handlers.Done()
+			}()
 			s.handleConn(conn)
 		}()
+	}
+}
+
+func waitForHandlers(handlers *sync.WaitGroup, timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		handlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("nebridge: handler drain timed out after %s", timeout)
 	}
 }
 
@@ -152,20 +185,30 @@ func (s *Server) handleConn(conn net.Conn) {
 			if errors.Is(err, io.EOF) {
 				return
 			}
+			if isTimeout(err) {
+				reason := "idle_request_timeout: " + err.Error()
+				s.logDeny("", 0, "", reason)
+				_ = s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
+				return
+			}
 			reason := "frame_decode_failed: " + err.Error()
 			s.logDeny("", 0, "", reason)
-			s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
+			_ = s.writeResponse(conn, Response{Verdict: VerdictDrop, Reason: reason})
 			return
 		}
 		_ = conn.SetReadDeadline(time.Time{})
 		host, err := tlsparse.ParseSNI(req.ClientHello)
 		if err != nil {
-			s.drop(conn, "", req, "sni_parse_failed: "+err.Error())
+			if !s.drop(conn, "", req, "sni_parse_failed: "+err.Error()) {
+				return
+			}
 			continue
 		}
 		pi, sig, err := s.Resolver.Resolve(req.AuditToken)
 		if err != nil {
-			s.drop(conn, host, req, "identity_resolve_failed: "+err.Error())
+			if !s.drop(conn, host, req, "identity_resolve_failed: "+err.Error()) {
+				return
+			}
 			continue
 		}
 
@@ -174,14 +217,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		entry.DestPort = req.DstPort
 		entry = logEntryForDecision(dec, entry)
 		if err := s.Log.Write(entry); err != nil {
-			s.drop(conn, host, req, "log_write_failed: "+err.Error())
-			continue
+			_ = s.drop(conn, host, req, "log_write_failed: "+err.Error())
+			return
 		}
-		s.writeResponse(conn, Response{Verdict: verdictFor(dec), Host: host, Reason: entry.Reason})
+		if err := s.writeResponse(conn, Response{Verdict: verdictFor(dec), Host: host, Reason: entry.Reason}); err != nil {
+			return
+		}
 	}
 }
 
-func (s *Server) drop(conn net.Conn, host string, req Request, reason string) {
+func (s *Server) drop(conn net.Conn, host string, req Request, reason string) bool {
 	entry := decisionlog.Entry{
 		Decision:  decisionlog.DecisionDeny,
 		Action:    string(decisionlog.DecisionDeny),
@@ -192,7 +237,7 @@ func (s *Server) drop(conn net.Conn, host string, req Request, reason string) {
 		DestPort:  req.DstPort,
 	}
 	_ = s.Log.Write(entry)
-	s.writeResponse(conn, Response{Verdict: VerdictDrop, Host: host, Reason: reason})
+	return s.writeResponse(conn, Response{Verdict: VerdictDrop, Host: host, Reason: reason}) == nil
 }
 
 func (s *Server) logDeny(destIP string, destPort int, host, reason string) {
@@ -238,10 +283,19 @@ func invalidDecisionReason(decision decisionlog.Decision) string {
 	return fmt.Sprintf("invalid_decision: %q", decision)
 }
 
-func (s *Server) writeResponse(conn net.Conn, response Response) {
-	_ = conn.SetWriteDeadline(time.Now().Add(s.responseWriteTimeout()))
-	_ = EncodeResponse(conn, response)
-	_ = conn.SetWriteDeadline(time.Time{})
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func (s *Server) writeResponse(conn net.Conn, response Response) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(s.responseWriteTimeout())); err != nil {
+		return err
+	}
+	if err := EncodeResponse(conn, response); err != nil {
+		return err
+	}
+	return conn.SetWriteDeadline(time.Time{})
 }
 
 func (s *Server) requestReadTimeout() time.Duration {

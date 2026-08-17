@@ -7,6 +7,7 @@ import (
 
 	"github.com/byliu-labs/egress-guard/internal/nebridge"
 	"github.com/byliu-labs/egress-guard/internal/procid"
+	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
 func registerStubIdentity(fs *flag.FlagSet) func() nebridge.IdentityResolver {
@@ -15,6 +16,9 @@ func registerStubIdentity(fs *flag.FlagSet) func() nebridge.IdentityResolver {
 		if !*on {
 			return nil
 		}
-		return nebridge.StubResolver{Proc: procid.ProcInfo{Comm: "nebridge-proto-test"}}
+		return nebridge.StubResolver{
+			Proc: procid.ProcInfo{Comm: "nebridge-proto-test"},
+			Sig:  signature.SignedIdentity{Valid: true, TeamID: "TESTTEAM"},
+		}
 	}
 }
