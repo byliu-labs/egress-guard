@@ -70,6 +70,26 @@ func TestReadFilter_FiltersByHost(t *testing.T) {
 	}
 }
 
+func TestReadFilter_SkipsFlowRecords(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.log")
+	w, _ := Open(path)
+	_ = w.Write(Entry{Decision: DecisionAllow, Action: "allow", Host: "keep.example", ConnID: "0123456789abcdef"})
+	_ = w.Write(Entry{Kind: KindFlow, Decision: DecisionAllow, Host: "keep.example", ConnID: "0123456789abcdef", BytesUp: 1, BytesDown: 2})
+	w.Close()
+
+	entries, err := ReadFilter(path, Filter{Host: "keep.example"})
+	if err != nil {
+		t.Fatalf("ReadFilter: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d filtered entries, want only the decision record: %+v", len(entries), entries)
+	}
+	if entries[0].IsFlow() {
+		t.Fatal("ReadFilter returned a flow record to a decision-log consumer")
+	}
+}
+
 func TestReadFilter_FiltersByPID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "decisions.log")

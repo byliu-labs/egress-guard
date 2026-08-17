@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
@@ -11,14 +14,19 @@ import (
 )
 
 func TestEntryFor_SetsPersistenceForKnownPID(t *testing.T) {
-	restore := stubPersistenceAttribute(t, persist.Source{Kind: persist.KindSession}, nil)
-	defer restore()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	pi := procid.ProcInfo{
-		PID:  123,
-		PPID: 1,
-		Exe:  "/usr/bin/tool",
-		Comm: "tool",
+		PID:  os.Getpid(),
+		PPID: os.Getppid(),
+		Exe:  os.Args[0],
+		Comm: filepath.Base(os.Args[0]),
+	}
+	if _, err := persist.Attribute(pi); err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("host process inspection blocked by sandbox: %v", err)
+		}
+		t.Fatalf("persist.Attribute preflight: %v", err)
 	}
 	entry := entryFor(decisionlog.DecisionAllow, "", "test.example.com", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
 	if entry.Persistence == nil {

@@ -8,13 +8,16 @@ import (
 )
 
 // spliceBoth shuttles bytes in both directions between client and upstream
-// until either side closes.
-func spliceBoth(client, upstream net.Conn) {
+// until either side closes, returning how many bytes moved each way. The
+// counts are io.Copy's return value; no payload byte is retained, examined,
+// or hashed anywhere in this function. PHILOSOPHY.md §4.8.
+func spliceBoth(client, upstream net.Conn) (up, down int64) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(upstream, client); upstream.Close() }()
-	go func() { defer wg.Done(); _, _ = io.Copy(client, upstream); client.Close() }()
+	go func() { defer wg.Done(); up, _ = io.Copy(upstream, client); upstream.Close() }()
+	go func() { defer wg.Done(); down, _ = io.Copy(client, upstream); client.Close() }()
 	wg.Wait()
+	return up, down
 }
 
 // time shims so tests can stub if needed.

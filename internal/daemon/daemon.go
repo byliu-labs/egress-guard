@@ -81,6 +81,7 @@ type Daemon struct {
 	opts     Options
 	listener net.Listener
 	ready    chan struct{}
+	dial     func(network, address string) (net.Conn, error)
 	mu       sync.Mutex
 	// baseline is the drift baseline the decision path consults. It is an
 	// atomic pointer (not opts.Baseline directly) so a background refresher can
@@ -94,7 +95,7 @@ func New(opts Options) (*Daemon, error) {
 	if opts.Allow == nil || opts.Log == nil || opts.Kernel == nil {
 		return nil, errors.New("daemon: Options missing required field")
 	}
-	d := &Daemon{opts: opts, ready: make(chan struct{})}
+	d := &Daemon{opts: opts, ready: make(chan struct{}), dial: net.Dial}
 	d.baseline.Store(opts.Baseline) // may be nil; atomic.Pointer handles it
 	return d, nil
 }
