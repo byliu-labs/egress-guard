@@ -8,4 +8,6 @@
 /internal/catalogfetch/                  @byliu-labs
 /internal/catalogsig/                    @byliu-labs
 /internal/cli/catalog.go                 @byliu-labs
+/.github/CODEOWNERS                     @byliu-labs
+/.github/workflows/ci.yml               @byliu-labs
 /.github/workflows/catalog-refresh.yml   @byliu-labs

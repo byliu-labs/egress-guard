@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -84,20 +85,29 @@ func compileBaselineForOutput(c *catalog.Catalog, out string) ([]byte, error) {
 
 func cmdGenKey(args []string) error {
 	fs := flag.NewFlagSet("genkey", flag.ContinueOnError)
-	pubOut := fs.String("pub-out", "internal/catalogfetch/maintainer.pub", "public key output path")
+	keyOut := fs.String("key-out", "", "private signing key output path; created mode 0600")
+	pubOut := fs.String("pub-out", "", "optional public key output path")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *keyOut == "" {
+		return fmt.Errorf("genkey requires --key-out <private key file>")
 	}
 	pub, priv, err := catalogsig.GenerateKey()
 	if err != nil {
 		return err
 	}
-	if err := writeNewFile(*pubOut, pub, 0o644); err != nil {
+	if err := writeNewFile(*keyOut, []byte(base64.StdEncoding.EncodeToString(priv)+"\n"), 0o600); err != nil {
 		return err
 	}
-	fmt.Printf("wrote %s (commit this)\n", *pubOut)
-	fmt.Println("Store this private key in CATALOG_SIGNING_KEY; it is printed once:")
-	fmt.Println(base64.StdEncoding.EncodeToString(priv))
+	fmt.Printf("wrote private signing key to %s (store in CATALOG_SIGNING_KEY; do not commit)\n", *keyOut)
+	if *pubOut != "" {
+		if err := writeNewFile(*pubOut, pub, 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("wrote public key to %s\n", *pubOut)
+	}
+	fmt.Printf("maintainerPubHex for internal/catalogfetch/embedded.go:\n%s\n", hex.EncodeToString(pub))
 	return nil
 }
 

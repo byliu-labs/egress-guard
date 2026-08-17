@@ -16,4 +16,8 @@ func systemBaselineCatalogPath() (string, error) {
 	return "", errors.New("catalog fetch --system is macOS-only")
 }
 
+func BootDaemonInstalled() bool {
+	return launchDaemonInstalled()
+}
+
 var launchDaemonInstalled = func() bool { return false }

@@ -3,6 +3,7 @@
 package catalogfetch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,9 @@ type HTTPFetcher struct {
 }
 
 const MaxCatalogBytes = 8 << 20
+
+// ErrSignature marks failures where the catalog bytes could not be authenticated.
+var ErrSignature = errors.New("catalogfetch: signature error")
 
 func (h HTTPFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
 	if err := requireSafeCatalogURL(url); err != nil {
@@ -66,10 +70,10 @@ func FetchVerified(ctx context.Context, url, sigURL, destPath string, f Fetcher,
 	}
 	sig, err := f.Fetch(ctx, sigURL)
 	if err != nil {
-		return fmt.Errorf("catalogfetch: download signature %s: %w", sigURL, err)
+		return fmt.Errorf("%w: download signature %s: %v", ErrSignature, sigURL, err)
 	}
 	if err := catalogsig.Verify(data, sig, pub); err != nil {
-		return fmt.Errorf("catalogfetch: %w", err)
+		return fmt.Errorf("%w: %v", ErrSignature, err)
 	}
 	return installValid(data, destPath)
 }
@@ -86,9 +90,26 @@ func installValid(data []byte, destPath string) error {
 		return fmt.Errorf("catalogfetch: refusing catalog with invalid issued_at %q: %w", fresh.IssuedAt(), err)
 	}
 	existing, err := catalog.LoadFile(destPath)
-	if err == nil && !strictlyNewer(fresh.IssuedAt(), existing.IssuedAt()) {
-		return fmt.Errorf("catalogfetch: refusing catalog issued %q, not newer than installed %q",
-			fresh.IssuedAt(), existing.IssuedAt())
+	if err == nil {
+		existingAt, err := parseIssuedAt(existing.IssuedAt())
+		if err == nil {
+			freshAt, _ := parseIssuedAt(fresh.IssuedAt())
+			if freshAt.Before(existingAt) {
+				return fmt.Errorf("catalogfetch: refusing catalog issued %q, older than installed %q",
+					fresh.IssuedAt(), existing.IssuedAt())
+			}
+			if freshAt.Equal(existingAt) {
+				existingBytes, err := os.ReadFile(destPath)
+				if err != nil {
+					return fmt.Errorf("catalogfetch: cannot read existing catalog %s: %w", destPath, err)
+				}
+				if bytes.Equal(data, existingBytes) {
+					return nil
+				}
+				return fmt.Errorf("catalogfetch: refusing catalog issued %q with different bytes than installed catalog",
+					fresh.IssuedAt())
+			}
+		}
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("catalogfetch: cannot read existing catalog %s: %w", destPath, err)

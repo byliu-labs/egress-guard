@@ -180,3 +180,44 @@ func TestInstall_RefusesReplayOfOlderCatalog(t *testing.T) {
 		t.Fatal("existing catalog was replaced by replayed bytes")
 	}
 }
+
+func TestInstall_CurrentCatalogIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "catalog-baseline.toml")
+	current := []byte(validIssuedBaselineTOML)
+	if err := os.WriteFile(dest, current, 0o644); err != nil {
+		t.Fatalf("seed current catalog: %v", err)
+	}
+
+	if err := installValid(current, dest); err != nil {
+		t.Fatalf("current catalog reinstall should be a no-op success: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read current catalog: %v", err)
+	}
+	if string(got) != string(current) {
+		t.Fatal("current catalog reinstall changed the installed bytes")
+	}
+}
+
+func TestInstall_RefusesDifferentCatalogWithSameIssuedAt(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "catalog-baseline.toml")
+	current := []byte(validIssuedBaselineTOML)
+	changed := []byte(strings.Replace(validIssuedBaselineTOML, "pypi.org", "evil.example", 1))
+	if err := os.WriteFile(dest, current, 0o644); err != nil {
+		t.Fatalf("seed current catalog: %v", err)
+	}
+
+	if err := installValid(changed, dest); err == nil {
+		t.Fatal("same issued_at with different bytes must not replace the installed catalog")
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read preserved catalog: %v", err)
+	}
+	if string(got) != string(current) {
+		t.Fatal("same-issued-at catalog changed the installed bytes")
+	}
+}

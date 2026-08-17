@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -152,8 +155,76 @@ func TestRun_SignRejectsMissingKey(t *testing.T) {
 	}
 }
 
+func TestRun_GenKeyRequiresPrivateKeyOutput(t *testing.T) {
+	err := run([]string{"genkey"})
+	if err == nil {
+		t.Fatal("genkey without --key-out should fail instead of printing private material")
+	}
+	if !strings.Contains(err.Error(), "--key-out") {
+		t.Fatalf("error should name --key-out: %v", err)
+	}
+}
+
+func TestRun_GenKeyWritesPrivateKeyToFileAndDoesNotPrintIt(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "catalog-signing.key")
+	var err error
+	stdout := captureStdout(t, func() {
+		err = run([]string{"genkey", "--key-out", keyPath})
+	})
+	if err != nil {
+		t.Fatalf("genkey: %v", err)
+	}
+	raw, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read generated private key: %v", err)
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat generated private key: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("private key permissions = %o, want 0600", got)
+	}
+	encodedPrivate := strings.TrimSpace(string(raw))
+	priv, err := base64.StdEncoding.DecodeString(encodedPrivate)
+	if err != nil {
+		t.Fatalf("generated private key is not base64: %v", err)
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		t.Fatalf("private key length = %d, want %d", len(priv), ed25519.PrivateKeySize)
+	}
+	if strings.Contains(stdout, encodedPrivate) {
+		t.Fatal("genkey printed the private signing key to stdout")
+	}
+	if !strings.Contains(stdout, "maintainerPubHex") {
+		t.Fatalf("genkey output should tell maintainers which embedded public key to rotate:\n%s", stdout)
+	}
+}
+
 func TestRun_UnknownSubcommand(t *testing.T) {
 	if err := run([]string{"frobnicate"}); err == nil {
 		t.Error("expected error for unknown subcommand")
 	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout pipe: %v", err)
+	}
+	return string(out)
 }
