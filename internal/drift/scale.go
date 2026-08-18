@@ -16,6 +16,7 @@ const shrinkageWeight = 10.0
 var minimumScale = Scale{
 	DimBytesUp: 0.1, DimBytesDown: 0.1, DimRatio: 0.1, DimDuration: 0.1,
 	DimHourSin: 0.1, DimHourCos: 0.1, DimUserActive: 0.5, DimInterArrival: 0.1,
+	DimConcurrency: 0.1,
 }
 
 // ScaleFor estimates robust per-pair spread and continuously shrinks it toward

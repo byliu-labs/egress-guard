@@ -18,7 +18,7 @@ func testJoined(ts string, up, down, duration int64, active *bool) decisionlog.J
 
 func TestPointFromEncodesConnectionMetadata(t *testing.T) {
 	yes := true
-	p, ok := PointFrom(testJoined("2026-08-17T23:00:00Z", 1023, 4095, 250, &yes), time.Time{})
+	p, ok := PointFrom(testJoined("2026-08-17T23:00:00Z", 1023, 4095, 250, &yes), time.Time{}, 0)
 	if !ok || p[DimBytesUp] != math.Log1p(1023) || p[DimBytesDown] != math.Log1p(4095) || p[DimUserActive] != 1 {
 		t.Fatalf("PointFrom = %v, %v", p, ok)
 	}
@@ -28,9 +28,9 @@ func TestPointFromEncodesConnectionMetadata(t *testing.T) {
 }
 
 func TestPointFromUsesCyclicHourAndNeutralUnknownActivity(t *testing.T) {
-	a, _ := PointFrom(testJoined("2026-08-17T23:00:00Z", 1, 1, 1, nil), time.Time{})
-	b, _ := PointFrom(testJoined("2026-08-18T01:00:00Z", 1, 1, 1, nil), time.Time{})
-	mid, _ := PointFrom(testJoined("2026-08-17T12:00:00Z", 1, 1, 1, nil), time.Time{})
+	a, _ := PointFrom(testJoined("2026-08-17T23:00:00Z", 1, 1, 1, nil), time.Time{}, 0)
+	b, _ := PointFrom(testJoined("2026-08-18T01:00:00Z", 1, 1, 1, nil), time.Time{}, 0)
+	mid, _ := PointFrom(testJoined("2026-08-17T12:00:00Z", 1, 1, 1, nil), time.Time{}, 0)
 	if a[DimUserActive] != 0.5 || math.Hypot(a[DimHourSin]-b[DimHourSin], a[DimHourCos]-b[DimHourCos]) >= math.Hypot(a[DimHourSin]-mid[DimHourSin], a[DimHourCos]-mid[DimHourCos]) {
 		t.Fatalf("cyclic/neutral encoding failed: %v %v %v", a, b, mid)
 	}
@@ -39,15 +39,15 @@ func TestPointFromUsesCyclicHourAndNeutralUnknownActivity(t *testing.T) {
 func TestPointFromRejectsIncompleteRecordsAndUsesPairGap(t *testing.T) {
 	noFlow := testJoined("2026-08-17T14:01:00Z", 1, 1, 1, nil)
 	noFlow.HasFlow = false
-	if _, ok := PointFrom(noFlow, time.Time{}); ok {
+	if _, ok := PointFrom(noFlow, time.Time{}, 0); ok {
 		t.Fatal("missing flow became a point")
 	}
 	bad := testJoined("not-a-time", 1, 1, 1, nil)
-	if _, ok := PointFrom(bad, time.Time{}); ok {
+	if _, ok := PointFrom(bad, time.Time{}, 0); ok {
 		t.Fatal("bad timestamp became a point")
 	}
 	prev := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)
-	p, _ := PointFrom(testJoined("2026-08-17T14:01:00Z", 1, 1, 1, nil), prev)
+	p, _ := PointFrom(testJoined("2026-08-17T14:01:00Z", 1, 1, 1, nil), prev, 0)
 	if p[DimInterArrival] != math.Log1p(60) {
 		t.Fatalf("gap = %v", p[DimInterArrival])
 	}
@@ -59,8 +59,27 @@ func TestPointFromRejectsNegativeFlowMetadata(t *testing.T) {
 		testJoined("2026-08-17T14:00:00Z", 1, -2, 1, nil),
 		testJoined("2026-08-17T14:00:00Z", 1, 1, -1, nil),
 	} {
-		if _, ok := PointFrom(test, time.Time{}); ok {
+		if _, ok := PointFrom(test, time.Time{}, 0); ok {
 			t.Fatalf("invalid flow became a point: %+v", test.Flow)
 		}
+	}
+}
+
+func TestPointFromLogScalesConcurrency(t *testing.T) {
+	yes := true
+	point, ok := PointFrom(testJoined("2026-08-17T14:20:00Z", 1, 1, 1, &yes), time.Time{}, 7)
+	if !ok {
+		t.Fatal("PointFrom returned !ok")
+	}
+	if want := math.Log1p(7); point[DimConcurrency] != want {
+		t.Errorf("DimConcurrency = %v, want %v", point[DimConcurrency], want)
+	}
+}
+
+func TestPointFromZeroConcurrencyIsZero(t *testing.T) {
+	yes := true
+	point, _ := PointFrom(testJoined("2026-08-17T14:20:00Z", 1, 1, 1, &yes), time.Time{}, 0)
+	if point[DimConcurrency] != 0 {
+		t.Errorf("DimConcurrency = %v, want 0", point[DimConcurrency])
 	}
 }

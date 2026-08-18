@@ -131,13 +131,15 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		b.pairs[pair] = true
 	}
 	b.builtThrough = latest
+	joined := decisionlog.Join(entries)
+	concurrency := decisionlog.BuildConcurrencyIndex(joined)
 	b.clouds = newClouds()
-	for _, joined := range decisionlog.Join(entries) {
+	for _, joined := range joined {
 		if !foldsIntoBaseline(joined.Decision) {
 			continue
 		}
 		identity := IdentityFromEntry(joined.Decision)
-		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), joined)
+		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), joined, concurrency)
 	}
 	b.clouds.finish()
 	return b
@@ -206,7 +208,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 // ClientHello has no close-time flow metadata, so a known pair receives a
 // finite observational score without inventing byte counts.
 func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined) Score {
-	point, ok := PointFrom(joined, b.LastSeenFor(id, host))
+	point, ok := PointFrom(joined, b.LastSeenFor(id, host), 0)
 	if !ok {
 		return Score{}
 	}

@@ -19,12 +19,13 @@ func newClouds() *clouds {
 	return &clouds{points: map[string][]Point{}, last: map[string]time.Time{}}
 }
 
-func (cloud *clouds) add(key string, joined decisionlog.Joined) {
+func (cloud *clouds) add(key string, joined decisionlog.Joined, index *decisionlog.ConcurrencyIndex) {
 	timestamp, err := time.Parse(time.RFC3339, joined.Decision.Timestamp)
 	if err != nil {
 		return
 	}
-	point, ok := PointFrom(joined, cloud.last[key])
+	concurrency := index.At(timestamp, joined.Decision.ConnID)
+	point, ok := PointFrom(joined, cloud.last[key], concurrency)
 	cloud.last[key] = timestamp
 	if !ok {
 		return
