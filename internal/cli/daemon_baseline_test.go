@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +15,7 @@ import (
 func TestLoadStartupBaseline_SurvivesAStaleCache(t *testing.T) {
 	dir := t.TempDir()
 	cache := filepath.Join(dir, "baseline.json")
-	if err := os.WriteFile(cache, []byte(`{"schema_version":1}`), 0o600); err != nil {
+	if err := os.WriteFile(cache, []byte(`{"schema_version":3}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(dir, "decisions.log")
@@ -24,5 +25,18 @@ func TestLoadStartupBaseline_SurvivesAStaleCache(t *testing.T) {
 	b := loadStartupBaseline(logPath, cache, &catalog.Catalog{}, stdLogger{})
 	if b == nil {
 		t.Fatal("a stale cache must produce a rebuilt baseline, not nil")
+	}
+	data, err := os.ReadFile(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SchemaVersion != 4 {
+		t.Fatalf("cache schema version = %d, want rebuilt version 4", snapshot.SchemaVersion)
 	}
 }

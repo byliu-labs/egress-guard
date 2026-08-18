@@ -65,10 +65,10 @@ type Event struct {
 
 const minStableDays = 2
 
-// 3: point clouds gained DimConcurrency, which changes every distance, so a
-// version-2 snapshot describes points in a different space and must be rebuilt
+// 4: point clouds gained DimConcurrency, which changes every distance, so a
+// version-3 snapshot describes points in a different space and must be rebuilt
 // from the decision log rather than loaded.
-const baselineSchemaVersion = 3
+const baselineSchemaVersion = 4
 
 const (
 	rankNeverHit         = 4

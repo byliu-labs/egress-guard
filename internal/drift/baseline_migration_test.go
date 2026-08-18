@@ -9,7 +9,7 @@ import (
 )
 
 func TestBaselineSchemaVersion_WasBumped(t *testing.T) {
-	if baselineSchemaVersion < 3 {
+	if baselineSchemaVersion < 4 {
 		t.Errorf("baselineSchemaVersion = %d; adding a dimension changes every "+
 			"distance and must bump it", baselineSchemaVersion)
 	}
@@ -20,13 +20,13 @@ func TestBaselineSchemaVersion_WasBumped(t *testing.T) {
 func TestLoadBaseline_PreviousPointSpaceDoesNotLoad(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "baseline.json")
-	old := `{"schema_version":2,"built_through":"2026-08-01T00:00:00Z",` +
+	old := `{"schema_version":3,"built_through":"2026-08-01T00:00:00Z",` +
 		`"identities":["a"],"hosts":["b"],"pairs":["a b"]}`
 	if err := os.WriteFile(p, []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	b, err := LoadBaseline(p, &catalog.Catalog{})
 	if err == nil && b != nil {
-		t.Fatal("a version-2 snapshot must not load into a version-3 point space")
+		t.Fatal("a version-3 snapshot must not load into a version-4 point space")
 	}
 }
