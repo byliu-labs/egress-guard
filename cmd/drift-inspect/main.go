@@ -11,9 +11,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/cli"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/drift"
 )
@@ -56,15 +56,27 @@ func inspect(logPath string) (report, error) {
 	return rep, nil
 }
 
-func main() {
-	def := ""
-	if home, err := os.UserHomeDir(); err == nil {
-		def = filepath.Join(home, ".local", "state", "egress-guard", "decisions.log")
+func defaultLogPath() (string, error) {
+	return cli.BlockLogPath()
+}
+
+func selectedLogPath(override string) (string, error) {
+	if override != "" {
+		return override, nil
 	}
-	logPath := flag.String("log", def, "path to decisions.log")
+	return defaultLogPath()
+}
+
+func main() {
+	logPath := flag.String("log", "", "path to blocked.log (defaults to the daemon's state log)")
 	flag.Parse()
 
-	rep, err := inspect(*logPath)
+	path, err := selectedLogPath(*logPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	rep, err := inspect(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -50,3 +50,27 @@ func TestInspect_EmptyLogIsNotAnError(t *testing.T) {
 		t.Errorf("Points = %d, want 0", rep.Points)
 	}
 }
+
+func TestDefaultLogPathUsesDaemonResolution(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	got, err := defaultLogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(stateHome, "egress-guard", "blocked.log")
+	if got != want {
+		t.Errorf("defaultLogPath() = %q, want %q", got, want)
+	}
+}
+
+func TestSelectedLogPathPreservesExplicitOverride(t *testing.T) {
+	got, err := selectedLogPath("/tmp/alternative.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/tmp/alternative.log" {
+		t.Errorf("selectedLogPath() = %q, want explicit override", got)
+	}
+}
