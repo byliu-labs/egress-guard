@@ -1,0 +1,72 @@
+// Command drift-calibrate reports the distribution of joint drift scores in a
+// decision log. It is read-only: calibration chooses a future policy threshold.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"math"
+	"os"
+	"sort"
+
+	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+	"github.com/byliu-labs/egress-guard/internal/drift"
+)
+
+func main() {
+	logPath := flag.String("log", "", "path to decisions.log")
+	train := flag.Float64("train", 0.7, "fraction of history used to build the baseline")
+	flag.Parse()
+	if *logPath == "" || *train <= 0 || *train >= 1 {
+		fmt.Fprintln(os.Stderr, "usage: drift-calibrate -log <path> [-train 0.7]")
+		os.Exit(2)
+	}
+	entries, err := decisionlog.Read(*logPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read %s: %v\n", *logPath, err)
+		os.Exit(1)
+	}
+	joined := decisionlog.Join(entries)
+	cut := int(float64(len(joined)) * *train)
+	var training []decisionlog.Entry
+	for _, item := range joined[:cut] {
+		training = append(training, item.Decision)
+		if item.HasFlow {
+			training = append(training, item.Flow)
+		}
+	}
+	baseline := drift.BuildBaseline(&catalog.Catalog{}, training)
+	var scores []float64
+	infinite := 0
+	for _, item := range joined[cut:] {
+		identity := catalog.Identity{ExeBasename: baseOf(item.Decision.Exe), ExeSHA256: item.Decision.ExeSHA256, TeamID: item.Decision.TeamID}
+		score := baseline.ScoreLive(identity, item.Decision.Host, item)
+		if math.IsInf(score.Distance, 1) {
+			infinite++
+			continue
+		}
+		scores = append(scores, score.Distance)
+	}
+	sort.Float64s(scores)
+	fmt.Printf("connections scored: %d (+%d with no history)\n", len(scores), infinite)
+	for _, q := range []float64{0.5, 0.9, 0.95, 0.99, 0.999} {
+		fmt.Printf("  p%-5.1f  %.3f\n", q*100, quantile(scores, q))
+	}
+}
+
+func quantile(sorted []float64, q float64) float64 {
+	if len(sorted) == 0 {
+		return math.NaN()
+	}
+	return sorted[int(q*float64(len(sorted)-1))]
+}
+
+func baseOf(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			return path[i+1:]
+		}
+	}
+	return path
+}
