@@ -26,6 +26,9 @@ entries:
     watch:
       - '^internal/daemon/.*\.go$'
       - '^internal/tlsparse/.*\.go$'
+      # internal/idle has no leaf of its own; its two invariants (observational,
+      # never awaited) are recorded in the daemon leaf, so edits there must nudge it.
+      - '^internal/idle/.*\.go$'
 
   # Privileged boundary: idempotent install, complete removal, ioctl ABI.
   - doc: internal/kernel/CLAUDE.md

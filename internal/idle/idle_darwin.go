@@ -25,6 +25,11 @@ func (ioregProbe) SecondsSinceInput() (float64, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ioreg", "-c", "IOHIDSystem", "-d", "4", "-r")
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	// Output waits for the stdout pipe to close, not just for the process. A
+	// child that inherits the pipe and outlives the context would block the
+	// refresh goroutine forever, leaving Cached.inFlight set and permanently
+	// stopping every future probe. WaitDelay bounds that teardown.
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("idle: ioreg: %w", err)

@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"net"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
@@ -46,5 +48,17 @@ func TestDeniedConnection_LogsUserActiveToDisk(t *testing.T) {
 	}
 	if *entries[0].UserActive {
 		t.Errorf("user_active = true, want false")
+	}
+
+	// Decoding through the same struct that wrote the line cannot catch a
+	// renamed JSON tag. Downstream scoring reads the literal key, so assert
+	// the bytes: both that the name is "user_active" and that a false value
+	// is written rather than omitted.
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"user_active":false`) {
+		t.Errorf(`on-disk record lacks "user_active":false; got %s`, raw)
 	}
 }

@@ -40,6 +40,12 @@ injected, which is what makes the decision branches testable without root.
   means no usable sample, never "idle". Future code that branches on it is a bug.
 - **The idle probe is never awaited.** `idle.Cached.Active()` returns the last background
   sample. Making it synchronous would put a process exec on the TLS handshake path.
+  Its timestamps are wall-clock, not monotonic: darwin's monotonic clock stops during
+  sleep, so a monotonic sample would survive an overnight sleep looking seconds fresh.
+- **Flow records carry no user-active bit, on purpose.** A `flow` record is written when
+  the connection closes, possibly hours after it was adjudicated, so the decision-time
+  bit would be a lie about the close time. Absent is the honest answer; do not copy it
+  across in `writeFlow`.
 - **Splice is the only path that moves payload bytes, and it never inspects them.**
 
 ## Related docs (up the tree)

@@ -143,6 +143,8 @@ func Start(args []string) error {
 	}
 	idleProbe := idle.NewCached(idle.NewSystemProbe(), idleProbeTTL, idleProbeMaxAge)
 	idleProbe.OnError = func(err error) { stdLogger{}.Errorf("idle: probe failed: %v", err) }
+	// Prime the cache: the first adjudicated connection should not also be
+	// the first probe, or it would be logged with the bit absent.
 	_, _ = idleProbe.Active()
 
 	baselineCache, err := baselineCachePath()

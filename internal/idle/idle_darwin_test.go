@@ -2,7 +2,11 @@
 
 package idle
 
-import "testing"
+import (
+	"errors"
+	"os/exec"
+	"testing"
+)
 
 const ioregSample = `
   +-o IOHIDSystem  <class IOHIDSystem, id 0x100000285, registered, matched>
@@ -37,7 +41,14 @@ func TestParseHIDIdleTime_GarbageIsAnError(t *testing.T) {
 func TestSystemProbe_ReturnsAPlausibleValue(t *testing.T) {
 	seconds, err := NewSystemProbe().SecondsSinceInput()
 	if err != nil {
-		t.Skipf("ioreg unavailable in this environment: %v", err)
+		// Only a missing or failing ioreg is an environment problem. A parse
+		// failure means real ioreg output stopped matching parseHIDIdleTime —
+		// the regression this test exists to catch — so it must not be a skip.
+		var exitErr *exec.ExitError
+		if errors.Is(err, exec.ErrNotFound) || errors.As(err, &exitErr) {
+			t.Skipf("ioreg unavailable in this environment: %v", err)
+		}
+		t.Fatalf("ioreg ran but its output no longer parses: %v", err)
 	}
 	if seconds < 0 || seconds > 86400 {
 		t.Errorf("SecondsSinceInput = %v, want plausible idle time", seconds)

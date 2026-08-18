@@ -42,8 +42,17 @@ type sample struct {
 }
 
 func NewCached(p Probe, ttl, maxAge time.Duration) *Cached {
-	return &Cached{inner: p, ttl: ttl, maxAge: maxAge, now: time.Now}
+	return &Cached{inner: p, ttl: ttl, maxAge: maxAge, now: wallNow}
 }
+
+// wallNow strips the monotonic clock reading time.Now attaches. Go's monotonic
+// clock on darwin is mach_absolute_time, which stops while the machine sleeps,
+// and Time.Sub/Time.Before use it alone whenever both operands carry one. A
+// sample taken before an overnight sleep would therefore look seconds old on a
+// 3 a.m. dark wake, defeating maxAge and stamping "the user was here" on
+// exactly the connections this bit exists to characterise. Wall time is the
+// honest measure of how long ago a human was observed.
+func wallNow() time.Time { return time.Now().Round(0) }
 
 // Active never waits for a probe. Before the first sample and after maxAge it
 // returns ErrNoSample, which callers must record as absent rather than idle.

@@ -176,3 +176,28 @@ func TestStub_ReturnsConfiguredValue(t *testing.T) {
 		t.Errorf("Active() = %v, %v; want false, nil", active, err)
 	}
 }
+
+// A sample must be dated by wall time, not by Go's monotonic clock. On darwin
+// the monotonic clock is mach_absolute_time, which stops while the machine is
+// asleep, so a monotonic-dated sample survives an overnight sleep looking
+// seconds old — maxAge never fires and the pre-sleep verdict is served to the
+// 3 a.m. connections this bit exists to characterise. The fake clocks used
+// elsewhere in this file return time.Unix values, which carry no monotonic
+// reading, so no other test can catch this.
+func TestCached_SampleIsDatedByWallClockSoItSurvivesSleep(t *testing.T) {
+	inner := &countingProbe{secs: 1}
+	c := NewCached(inner, time.Minute, time.Hour)
+	c.Active()
+	waitFor(t, func() bool { return inner.count() == 1 })
+
+	c.mu.Lock()
+	at, next := c.sample.at, c.nextProbeAt
+	c.mu.Unlock()
+
+	if at != at.Round(0) {
+		t.Errorf("sample.at carries a monotonic reading (%v); it will not survive system sleep", at)
+	}
+	if next != next.Round(0) {
+		t.Errorf("nextProbeAt carries a monotonic reading (%v); refreshes will not resume after sleep", next)
+	}
+}
