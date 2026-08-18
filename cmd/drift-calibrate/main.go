@@ -27,8 +27,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "read %s: %v\n", *logPath, err)
 		os.Exit(1)
 	}
+	scores, infinite := scoresForEntries(entries, *train)
+	sort.Float64s(scores)
+	fmt.Printf("connections scored: %d (+%d with no history)\n", len(scores), infinite)
+	for _, q := range []float64{0.5, 0.9, 0.95, 0.99, 0.999} {
+		fmt.Printf("  p%-5.1f  %.3f\n", q*100, quantile(scores, q))
+	}
+	fmt.Println()
+	fmt.Println("Choose promptDistance so the prompt rate is tolerable:")
+	for _, q := range []float64{0.99, 0.995, 0.999} {
+		fmt.Printf("  threshold %.3f -> %.2f%% of connections prompt\n", quantile(scores, q), (1-q)*100)
+	}
+}
+
+func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, int) {
 	joined := decisionlog.Join(entries)
-	cut := int(float64(len(joined)) * *train)
+	cut := int(float64(len(joined)) * train)
 	var training []decisionlog.Entry
 	for _, item := range joined[:cut] {
 		training = append(training, item.Decision)
@@ -40,7 +54,7 @@ func main() {
 	var scores []float64
 	infinite := 0
 	for _, item := range joined[cut:] {
-		identity := catalog.Identity{ExeBasename: baseOf(item.Decision.Exe), ExeSHA256: item.Decision.ExeSHA256, TeamID: item.Decision.TeamID}
+		identity := drift.IdentityFromEntry(item.Decision)
 		score := baseline.ScoreLive(identity, item.Decision.Host, item)
 		if math.IsInf(score.Distance, 1) {
 			infinite++
@@ -48,11 +62,7 @@ func main() {
 		}
 		scores = append(scores, score.Distance)
 	}
-	sort.Float64s(scores)
-	fmt.Printf("connections scored: %d (+%d with no history)\n", len(scores), infinite)
-	for _, q := range []float64{0.5, 0.9, 0.95, 0.99, 0.999} {
-		fmt.Printf("  p%-5.1f  %.3f\n", q*100, quantile(scores, q))
-	}
+	return scores, infinite
 }
 
 func quantile(sorted []float64, q float64) float64 {

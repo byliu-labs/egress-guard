@@ -39,7 +39,7 @@ const unknownUserActive = 0.5
 // metadata remains unknown rather than being fabricated as zero.
 func PointFrom(j decisionlog.Joined, prev time.Time) (Point, bool) {
 	var point Point
-	if !j.HasFlow {
+	if !j.HasFlow || j.Flow.BytesUp < 0 || j.Flow.BytesDown < 0 || j.Flow.DurationMS < 0 {
 		return point, false
 	}
 	timestamp, err := time.Parse(time.RFC3339, j.Decision.Timestamp)
@@ -67,5 +67,10 @@ func PointFrom(j decisionlog.Joined, prev time.Time) (Point, bool) {
 		gap = timestamp.Sub(prev).Seconds()
 	}
 	point[DimInterArrival] = math.Log1p(gap)
+	for _, value := range point {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return Point{}, false
+		}
+	}
 	return point, true
 }

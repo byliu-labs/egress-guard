@@ -8,16 +8,17 @@ import (
 // Scale normalizes each behavioural dimension before distances are compared.
 type Scale [numDims]float64
 
-const minScale = 1e-3
 const shrinkageWeight = 10.0
 
-var defaultScale = func() Scale {
-	var scale Scale
-	for dim := Dim(0); dim < numDims; dim++ {
-		scale[dim] = 1
-	}
-	return scale
-}()
+// minimumScale bounds each axis in its native, transformed units before
+// shrinkage. A zero-MAD cron-like pair must not become arbitrarily sensitive
+// merely because it has accumulated more history.
+var minimumScale = Scale{
+	DimBytesUp: 0.1, DimBytesDown: 0.1, DimRatio: 0.1, DimDuration: 0.1,
+	DimHourSin: 0.1, DimHourCos: 0.1, DimUserActive: 0.5, DimInterArrival: 0.1,
+}
+
+var defaultScale = minimumScale
 
 // ScaleFor estimates robust per-pair spread and continuously shrinks it toward
 // a pooled estimate when that pair has little history.
@@ -26,13 +27,17 @@ func ScaleFor(cloud []Point, pooled Scale) Scale {
 	weight := float64(len(cloud)) / (float64(len(cloud)) + shrinkageWeight)
 	for dim := Dim(0); dim < numDims; dim++ {
 		base := pooled[dim]
-		if base <= 0 {
+		if base < minimumScale[dim] {
 			base = defaultScale[dim]
 		}
-		value := weight*madAlong(cloud, dim) + (1-weight)*base
-		if value < minScale {
-			value = minScale
+		if base < minimumScale[dim] {
+			base = minimumScale[dim]
 		}
+		own := madAlong(cloud, dim)
+		if own < minimumScale[dim] {
+			own = minimumScale[dim]
+		}
+		value := weight*own + (1-weight)*base
 		scale[dim] = value
 	}
 	return scale
@@ -72,8 +77,8 @@ func PooledScale(clouds [][]Point) Scale {
 	var scale Scale
 	for dim := Dim(0); dim < numDims; dim++ {
 		scale[dim] = madAlong(all, dim)
-		if scale[dim] < minScale {
-			scale[dim] = defaultScale[dim]
+		if scale[dim] < minimumScale[dim] {
+			scale[dim] = minimumScale[dim]
 		}
 	}
 	return scale

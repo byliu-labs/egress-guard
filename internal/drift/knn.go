@@ -13,6 +13,9 @@ const dominantDimensions = 2
 // Score is the result of comparing one connection to its pair's history.
 // Distance is +Inf when the history is empty.
 type Score struct {
+	// Scored distinguishes a measured zero distance from a live handshake that
+	// lacks close-time flow metadata and therefore cannot be scored jointly.
+	Scored     bool
 	Distance   float64
 	Neighbours int
 	Dominant   []Dim
@@ -24,7 +27,7 @@ type Score struct {
 // cloud, plus the dimensions that dominate that distance.
 func ScorePoint(p Point, cloud []Point, s Scale) Score {
 	if len(cloud) == 0 {
-		return Score{Distance: math.Inf(1)}
+		return Score{Scored: true, Distance: math.Inf(1)}
 	}
 
 	type neighbour struct {
@@ -48,6 +51,7 @@ func ScorePoint(p Point, cloud []Point, s Scale) Score {
 
 	nearest := cloud[all[0].i]
 	return Score{
+		Scored:     true,
 		Distance:   sum / float64(n),
 		Neighbours: n,
 		Dominant:   dominantAgainst(p, nearest, s),

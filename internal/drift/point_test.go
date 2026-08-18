@@ -52,3 +52,15 @@ func TestPointFromRejectsIncompleteRecordsAndUsesPairGap(t *testing.T) {
 		t.Fatalf("gap = %v", p[DimInterArrival])
 	}
 }
+
+func TestPointFromRejectsNegativeFlowMetadata(t *testing.T) {
+	for _, test := range []decisionlog.Joined{
+		testJoined("2026-08-17T14:00:00Z", -2, 1, 1, nil),
+		testJoined("2026-08-17T14:00:00Z", 1, -2, 1, nil),
+		testJoined("2026-08-17T14:00:00Z", 1, 1, -1, nil),
+	} {
+		if _, ok := PointFrom(test, time.Time{}); ok {
+			t.Fatalf("invalid flow became a point: %+v", test.Flow)
+		}
+	}
+}

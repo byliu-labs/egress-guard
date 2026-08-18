@@ -106,7 +106,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		if !foldsIntoBaseline(e) {
 			continue
 		}
-		id := identityKey(identityFromEntry(e))
+		id := identityKey(IdentityFromEntry(e))
 		host := hostKey(e.Host)
 		pair := pairKey(id, host)
 		stats, ok := byPair[pair]
@@ -136,7 +136,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		if !foldsIntoBaseline(joined.Decision) {
 			continue
 		}
-		identity := identityFromEntry(joined.Decision)
+		identity := IdentityFromEntry(joined.Decision)
 		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), joined)
 	}
 	b.clouds.finish()
@@ -151,7 +151,7 @@ func foldsIntoBaseline(e decisionlog.Entry) bool {
 // entry decision because drift asks whether this pair is normal, not whether
 // this attempt was allowed.
 func (b *Baseline) Classify(e decisionlog.Entry) Event {
-	id := identityFromEntry(e)
+	id := IdentityFromEntry(e)
 	idKey := identityKey(id)
 	hKey := hostKey(e.Host)
 	pKey := pairKey(idKey, hKey)
@@ -206,20 +206,20 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 // ClientHello has no close-time flow metadata, so a known pair receives a
 // finite observational score without inventing byte counts.
 func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined) Score {
-	cloud, scale := b.CloudFor(id, host)
 	point, ok := PointFrom(joined, b.LastSeenFor(id, host))
 	if !ok {
-		if len(cloud) == 0 {
-			return Score{Distance: math.Inf(1)}
-		}
-		return Score{Distance: 0, Neighbours: len(cloud)}
+		return Score{}
 	}
+	cloud, scale := b.CloudFor(id, host)
 	return ScorePoint(point, cloud, scale)
 }
 
 // Explain renders the score's human-facing attribution without treating an
 // empty history as a fabricated comparison.
 func (event Event) Explain() string {
+	if !event.Score.Scored {
+		return "Joint drift score is not available until this connection closes."
+	}
 	if math.IsInf(event.Score.Distance, 1) || !event.Score.HasNearest {
 		return "This pairing has no history on this machine."
 	}
@@ -367,7 +367,10 @@ func sliceToSet(s []string) map[string]bool {
 	return out
 }
 
-func identityFromEntry(e decisionlog.Entry) catalog.Identity {
+// IdentityFromEntry is the single identity-key construction used by baseline
+// building and calibration. A hash tied to an absolute executable path is
+// path-sensitive, so callers must not reconstruct this identity by hand.
+func IdentityFromEntry(e decisionlog.Entry) catalog.Identity {
 	base := filepath.Base(e.Exe)
 	if base == "" || base == "." {
 		base = e.Comm

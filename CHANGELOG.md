@@ -7,6 +7,13 @@ versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Annotate-only joint drift scoring.** Decision and close-time flow records
+  are joined into persisted, per-`(identity, host)` behavioural clouds. Complete
+  flows receive a robustly scaled kNN distance and dimension attribution; the
+  new `drift-calibrate` command reports score quantiles from a decision log.
+  Handshake-time classifications explicitly report an unavailable score rather
+  than fabricating normality before flow metadata exists. Baseline snapshots
+  now use schema v3; v2 caches rebuild from the append-only log.
 - **`user_active` on decision-log records.** Each decision now records whether a
   human had touched the keyboard or mouse in the preceding five minutes, so a
   3 a.m. beacon can be told apart from you working at 3 a.m. Sampled in the
