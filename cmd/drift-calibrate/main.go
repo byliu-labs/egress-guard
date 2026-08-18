@@ -62,7 +62,7 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 	infinite, unscorable := 0, 0
 	for _, item := range joined[cut:] {
 		identity := drift.IdentityFromEntry(item.Decision)
-		score := baseline.ScoreLive(identity, item.Decision.Host, item)
+		score := baseline.ScoreLive(identity, item.Decision.Host, item, 0)
 		if !score.Scored {
 			unscorable++
 			continue

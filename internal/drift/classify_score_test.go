@@ -25,7 +25,7 @@ func TestClassifyScoresNovelPairAsInfiniteAndKnownPairAsFinite(t *testing.T) {
 func TestScoreLiveAttributesAndExplainIsHonest(t *testing.T) {
 	entries := append(flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow), flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)...)
 	baseline := BuildBaseline(&catalog.Catalog{}, entries)
-	score := baseline.ScoreLive(catalog.Identity{ExeBasename: "git"}, "github.com", testJoined("2026-08-19T03:00:00Z", 4_000_000, 1, 9000, nil))
+	score := baseline.ScoreLive(catalog.Identity{ExeBasename: "git"}, "github.com", testJoined("2026-08-19T03:00:00Z", 4_000_000, 1, 9000, nil), 0)
 	if !score.Scored || score.Distance < 1 || len(score.Dominant) == 0 {
 		t.Fatalf("score = %+v", score)
 	}
@@ -38,5 +38,14 @@ func TestScoreLiveAttributesAndExplainIsHonest(t *testing.T) {
 	}
 	if got := (Event{Score: Score{}}).Explain(); !strings.Contains(got, "not available") {
 		t.Fatalf("unscored explanation = %q", got)
+	}
+}
+
+func TestScoreLiveAddsInFlightConcurrencyToTheScore(t *testing.T) {
+	entries := append(flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow), flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)...)
+	baseline := BuildBaseline(&catalog.Catalog{}, entries)
+	score := baseline.ScoreLive(catalog.Identity{ExeBasename: "git"}, "github.com", testJoined("2026-08-19T14:00:00Z", 1, 100, 50, nil), 9)
+	if !score.Scored || score.Distance == 0 {
+		t.Fatalf("live concurrency was not scored: %+v", score)
 	}
 }

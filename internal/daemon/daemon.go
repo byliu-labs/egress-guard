@@ -109,6 +109,7 @@ type Daemon struct {
 	dial     func(network, address string) (net.Conn, error)
 	mu       sync.Mutex
 	hasher   *procid.ExeHasher
+	inflight *inflight
 	// baseline is the drift baseline the decision path consults. It is an
 	// atomic pointer (not opts.Baseline directly) so a background refresher can
 	// swap it while connection goroutines read it without a data race. A nil
@@ -121,7 +122,7 @@ func New(opts Options) (*Daemon, error) {
 	if opts.Allow == nil || opts.Log == nil || opts.Kernel == nil {
 		return nil, errors.New("daemon: Options missing required field")
 	}
-	d := &Daemon{opts: opts, ready: make(chan struct{}), dial: net.Dial, hasher: procid.NewExeHasher()}
+	d := &Daemon{opts: opts, ready: make(chan struct{}), dial: net.Dial, hasher: procid.NewExeHasher(), inflight: newInflight()}
 	d.baseline.Store(opts.Baseline) // may be nil; atomic.Pointer handles it
 	return d, nil
 }

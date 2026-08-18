@@ -153,6 +153,17 @@ func foldsIntoBaseline(e decisionlog.Entry) bool {
 // entry decision because drift asks whether this pair is normal, not whether
 // this attempt was allowed.
 func (b *Baseline) Classify(e decisionlog.Entry) Event {
+	return b.classify(e, 0)
+}
+
+// ClassifyLive scores a connection that is still open. concurrency is the
+// number of other connections the daemon currently has in flight; it is not
+// persisted and complements the concurrency derived from closed log records.
+func (b *Baseline) ClassifyLive(e decisionlog.Entry, concurrency int) Event {
+	return b.classify(e, concurrency)
+}
+
+func (b *Baseline) classify(e decisionlog.Entry, concurrency int) Event {
 	id := IdentityFromEntry(e)
 	idKey := identityKey(id)
 	hKey := hostKey(e.Host)
@@ -166,7 +177,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 		FirstSeen: firstSeen,
 		Log:       e,
 	}
-	ev.Score = b.ScoreLive(id, e.Host, decisionlog.Joined{Decision: e})
+	ev.Score = b.ScoreLive(id, e.Host, decisionlog.Joined{Decision: e}, concurrency)
 
 	if b.pairs[pKey] {
 		ev.Class = ClassKnown
@@ -207,8 +218,8 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 // ScoreLive scores one connection against the selected pair cloud. A live
 // ClientHello has no close-time flow metadata, so a known pair receives a
 // finite observational score without inventing byte counts.
-func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined) Score {
-	point, ok := PointFrom(joined, b.LastSeenFor(id, host), 0)
+func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined, concurrency int) Score {
+	point, ok := PointFrom(joined, b.LastSeenFor(id, host), concurrency)
 	if !ok {
 		return Score{}
 	}

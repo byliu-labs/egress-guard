@@ -172,10 +172,18 @@ func attributePersistence(pi procid.ProcInfo) *persist.Source {
 // branch tests can exercise it without needing a live socket and so the logic
 // is robust if the fast-path ever gets refactored.
 func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionOutcome, decisionlog.Entry) {
-	return d.decideBranchWithIdentity(host, dstIP, pi, sig, d.identityFor(pi, sig))
+	return d.decideBranchWithConcurrency(host, dstIP, pi, sig, 0)
+}
+
+func (d *Daemon) decideBranchWithConcurrency(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, concurrency int) (decisionOutcome, decisionlog.Entry) {
+	return d.decideBranchWithIdentityAndConcurrency(host, dstIP, pi, sig, d.identityFor(pi, sig), concurrency)
 }
 
 func (d *Daemon) decideBranchWithIdentity(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) (decisionOutcome, decisionlog.Entry) {
+	return d.decideBranchWithIdentityAndConcurrency(host, dstIP, pi, sig, id, 0)
+}
+
+func (d *Daemon) decideBranchWithIdentityAndConcurrency(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity, concurrency int) (decisionOutcome, decisionlog.Entry) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
 		return outcomeExempt, d.entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
 	}
@@ -218,7 +226,7 @@ func (d *Daemon) decideBranchWithIdentity(host string, dstIP net.IP, pi procid.P
 			Host:         host,
 			RegDom:       prompt.RegisteredDomain(host),
 			CatalogMatch: match,
-			Drift:        d.classifyDrift(host, pi, sig, id),
+			Drift:        d.classifyDriftWithConcurrency(host, pi, sig, id, concurrency),
 			Persistence:  attributePersistence(pi),
 		}
 		if d.opts.Explainer != nil {
@@ -361,6 +369,10 @@ func baseExecutableCacheKey(path string, info os.FileInfo) string {
 }
 
 func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) drift.Event {
+	return d.classifyDriftWithConcurrency(host, pi, sig, id, 0)
+}
+
+func (d *Daemon) classifyDriftWithConcurrency(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity, concurrency int) drift.Event {
 	exe := pi.Exe
 	if id.ExePath != "" {
 		exe = id.ExePath
@@ -379,7 +391,7 @@ func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.Si
 		Cwd:       pi.Cwd,
 	}
 	if b := d.baseline.Load(); b != nil {
-		ev := b.Classify(entry)
+		ev := b.ClassifyLive(entry, concurrency)
 		if catalog.HasDecisionPin(id) {
 			ev.Identity = id
 		}
@@ -417,6 +429,9 @@ func (d *Daemon) bindDest(host string, dstIP net.IP, pi procid.ProcInfo, sig sig
 
 func (d *Daemon) handle(conn net.Conn) {
 	defer conn.Close()
+	connID := newConnID()
+	d.inflight.open(connID)
+	defer d.inflight.done(connID)
 	conn.SetReadDeadline(timeNow().Add(clientHelloDeadline))
 
 	dstIP, dstPort, err := d.opts.Kernel.OriginalDest(conn)
@@ -482,7 +497,8 @@ func (d *Daemon) handle(conn net.Conn) {
 		return
 	}
 
-	outcome, entry := d.decideBranch(host, dstIP, pi, sig)
+	outcome, entry := d.decideBranchWithConcurrency(host, dstIP, pi, sig, d.inflight.count(connID))
+	entry.ConnID = connID
 	entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 	outcome, entry = d.finalizeOutcome(outcome, entry)
 
