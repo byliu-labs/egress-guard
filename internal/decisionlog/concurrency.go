@@ -9,7 +9,9 @@ import (
 // from log-derived connection timing. It is never persisted.
 type ConcurrencyIndex struct {
 	events   []concEvent
-	instants []concInstant
+	prefix   []int             // prefix[i] is the count after events[:i].
+	own      map[string][2]int // connID -> open and close event indices.
+	instants map[int64]instantCounts
 }
 
 type concEvent struct {
@@ -18,9 +20,9 @@ type concEvent struct {
 	connID string
 }
 
-type concInstant struct {
-	at     time.Time
-	connID string
+type instantCounts struct {
+	total    int
+	byConnID map[string]int
 }
 
 // BuildConcurrencyIndex folds joined connections into an open/close timeline.
@@ -28,14 +30,21 @@ type concInstant struct {
 // instant; it is kept separately because a zero-width open/close pair cancels
 // before a query can observe it.
 func BuildConcurrencyIndex(js []Joined) *ConcurrencyIndex {
-	idx := &ConcurrencyIndex{}
+	idx := &ConcurrencyIndex{instants: make(map[int64]instantCounts)}
 	for _, j := range js {
 		open, err := time.Parse(time.RFC3339, j.Decision.Timestamp)
 		if err != nil {
 			continue
 		}
 		if !j.HasFlow || j.Flow.DurationMS <= 0 {
-			idx.instants = append(idx.instants, concInstant{at: open, connID: j.Decision.ConnID})
+			at := open.UnixNano()
+			counts, ok := idx.instants[at]
+			if !ok {
+				counts.byConnID = make(map[string]int)
+			}
+			counts.total++
+			counts.byConnID[j.Decision.ConnID]++
+			idx.instants[at] = counts
 			continue
 		}
 		shut := open.Add(time.Duration(j.Flow.DurationMS) * time.Millisecond)
@@ -49,6 +58,24 @@ func BuildConcurrencyIndex(js []Joined) *ConcurrencyIndex {
 		}
 		return idx.events[a].at.Before(idx.events[b].at)
 	})
+	idx.prefix = make([]int, len(idx.events)+1)
+	idx.own = make(map[string][2]int, len(idx.events)/2)
+	for i, event := range idx.events {
+		idx.prefix[i+1] = idx.prefix[i] + event.delta
+		if event.connID == "" {
+			continue
+		}
+		own, ok := idx.own[event.connID]
+		if !ok {
+			own = [2]int{-1, -1}
+		}
+		if event.delta > 0 {
+			own[0] = i
+		} else {
+			own[1] = i
+		}
+		idx.own[event.connID] = own
+	}
 	return idx
 }
 
@@ -61,16 +88,21 @@ func (idx *ConcurrencyIndex) At(t time.Time, excludeConnID string) int {
 	hi := sort.Search(len(idx.events), func(i int) bool {
 		return idx.events[i].at.After(t)
 	})
-	n := 0
-	for _, event := range idx.events[:hi] {
-		if event.connID != "" && event.connID == excludeConnID {
-			continue
+	n := idx.prefix[hi]
+	if excludeConnID != "" {
+		if own, ok := idx.own[excludeConnID]; ok {
+			if own[0] >= 0 && own[0] < hi {
+				n--
+			}
+			if own[1] >= 0 && own[1] < hi {
+				n++
+			}
 		}
-		n += event.delta
 	}
-	for _, instant := range idx.instants {
-		if instant.at.Equal(t) && (instant.connID == "" || instant.connID != excludeConnID) {
-			n++
+	if instants, ok := idx.instants[t.UnixNano()]; ok {
+		n += instants.total
+		if excludeConnID != "" {
+			n -= instants.byConnID[excludeConnID]
 		}
 	}
 	if n < 0 {
