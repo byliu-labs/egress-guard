@@ -18,8 +18,6 @@ var minimumScale = Scale{
 	DimHourSin: 0.1, DimHourCos: 0.1, DimUserActive: 0.5, DimInterArrival: 0.1,
 }
 
-var defaultScale = minimumScale
-
 // ScaleFor estimates robust per-pair spread and continuously shrinks it toward
 // a pooled estimate when that pair has little history.
 func ScaleFor(cloud []Point, pooled Scale) Scale {
@@ -27,9 +25,6 @@ func ScaleFor(cloud []Point, pooled Scale) Scale {
 	weight := float64(len(cloud)) / (float64(len(cloud)) + shrinkageWeight)
 	for dim := Dim(0); dim < numDims; dim++ {
 		base := pooled[dim]
-		if base < minimumScale[dim] {
-			base = defaultScale[dim]
-		}
 		if base < minimumScale[dim] {
 			base = minimumScale[dim]
 		}

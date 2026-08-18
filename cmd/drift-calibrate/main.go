@@ -27,9 +27,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "read %s: %v\n", *logPath, err)
 		os.Exit(1)
 	}
-	scores, infinite := scoresForEntries(entries, *train)
+	scores, infinite, unscorable := scoresForEntries(entries, *train)
 	sort.Float64s(scores)
-	fmt.Printf("connections scored: %d (+%d with no history)\n", len(scores), infinite)
+	fmt.Printf("connections scored: %d (+%d with no history, +%d unscorable)\n",
+		len(scores), infinite, unscorable)
 	for _, q := range []float64{0.5, 0.9, 0.95, 0.99, 0.999} {
 		fmt.Printf("  p%-5.1f  %.3f\n", q*100, quantile(scores, q))
 	}
@@ -40,7 +41,13 @@ func main() {
 	}
 }
 
-func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, int) {
+// scoresForEntries returns the measured distances, the count of connections
+// whose pair had no history, and the count that could not be scored at all.
+// The three are kept apart deliberately: an unscorable connection is a
+// non-measurement, and folding it into the sample as distance 0 would report a
+// median joint distance of zero and understate the prompt rate of any
+// threshold chosen from these quantiles.
+func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, int, int) {
 	joined := decisionlog.Join(entries)
 	cut := int(float64(len(joined)) * train)
 	var training []decisionlog.Entry
@@ -52,17 +59,21 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 	}
 	baseline := drift.BuildBaseline(&catalog.Catalog{}, training)
 	var scores []float64
-	infinite := 0
+	infinite, unscorable := 0, 0
 	for _, item := range joined[cut:] {
 		identity := drift.IdentityFromEntry(item.Decision)
 		score := baseline.ScoreLive(identity, item.Decision.Host, item)
+		if !score.Scored {
+			unscorable++
+			continue
+		}
 		if math.IsInf(score.Distance, 1) {
 			infinite++
 			continue
 		}
 		scores = append(scores, score.Distance)
 	}
-	return scores, infinite
+	return scores, infinite, unscorable
 }
 
 func quantile(sorted []float64, q float64) float64 {
