@@ -28,7 +28,7 @@ func TestEntryFor_SetsPersistenceForKnownPID(t *testing.T) {
 		}
 		t.Fatalf("persist.Attribute preflight: %v", err)
 	}
-	entry := entryFor(decisionlog.DecisionAllow, "", "test.example.com", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
+	entry := (&Daemon{}).entryFor(decisionlog.DecisionAllow, "", "test.example.com", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
 	if entry.Persistence == nil {
 		t.Fatal("Persistence is nil, want populated")
 	}
@@ -41,7 +41,7 @@ func TestEntryFor_SetsPersistenceForKnownPID(t *testing.T) {
 func TestEntryFor_NilPersistenceForZeroPID(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	entry := entryFor(decisionlog.DecisionDeny, "some_reason", "", procid.ProcInfo{}, signature.SignedIdentity{}, "")
+	entry := (&Daemon{}).entryFor(decisionlog.DecisionDeny, "some_reason", "", procid.ProcInfo{}, signature.SignedIdentity{}, "")
 	if entry.Persistence != nil {
 		t.Errorf("Persistence = %+v, want nil for zero-value ProcInfo", entry.Persistence)
 	}
@@ -71,8 +71,9 @@ func TestEntryFor_CachesPersistenceByProcessIdentity(t *testing.T) {
 	defer restore()
 
 	pi := procid.ProcInfo{PID: 123, PPID: 1, Exe: "/usr/bin/tool", Comm: "tool"}
-	entry1 := entryFor(decisionlog.DecisionAllow, "", "one.example", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
-	entry2 := entryFor(decisionlog.DecisionAllow, "", "two.example", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
+	d := &Daemon{}
+	entry1 := d.entryFor(decisionlog.DecisionAllow, "", "one.example", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
+	entry2 := d.entryFor(decisionlog.DecisionAllow, "", "two.example", pi, signature.SignedIdentity{}, decisionlog.TierDefault)
 	if entry1.Persistence == nil || entry2.Persistence == nil {
 		t.Fatalf("Persistence entries = %v, %v; want cached populated source", entry1.Persistence, entry2.Persistence)
 	}

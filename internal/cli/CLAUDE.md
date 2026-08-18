@@ -28,6 +28,10 @@ probing, log tailing, telemetry opt-in, and baseline refresh.
 - **Status probing must not prompt for privileges.** Reading state is a read; if a probe
   needs root to answer, it reports unknown rather than escalating. An unattributed root
   prompt on relaunch is a shipped bug, not an inconvenience.
+- **The idle probe is constructed here and primed before the daemon starts.** `Start`
+  builds `idle.NewCached` and calls `Active()` once so the first adjudicated connection
+  is not also the first probe. `idleProbeTTL`/`idleProbeMaxAge` live next to it: the
+  daemon never chooses them, so this is the only place they can be tuned.
 - **List writers are separate on purpose.** "Always allow" (user intent) and "ratified"
   (accepted after a prompt) are different provenance; do not merge them into one writer.
 

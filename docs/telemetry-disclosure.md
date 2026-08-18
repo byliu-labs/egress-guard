@@ -28,6 +28,9 @@ When enabled, each "Allow Always" or "Deny Always" ratification sends one
 
 - Process arguments, working directory, PID, or file paths.
 - Connection payloads or TLS session bytes.
+- `user_active` — whether someone had touched the keyboard or mouse recently.
+  This is recorded in your local decision log so behavioural scoring can tell a
+  3 a.m. beacon from you working at 3 a.m. It never leaves your machine.
 - Any field beyond the five fields listed above.
 
 ## What telemetry is used for

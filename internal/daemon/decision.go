@@ -48,21 +48,21 @@ const maxGraceHashesPerPath = 16
 // entryFor builds a decisionlog.Entry pre-populated with process, signature,
 // and trust-tier context. The caller adds DestIP/DestPort because those come
 // from the Kernel lookup, not from procid.
-func entryFor(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
-	entry := entryForWithoutPersistence(decision, reason, host, pi, sig, tier)
+func (d *Daemon) entryFor(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
+	entry := d.entryForWithoutPersistence(decision, reason, host, pi, sig, tier)
 	entry.Persistence = attributePersistence(pi)
 	return entry
 }
 
-func entryForWithoutPersistence(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
-	return entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, true)
+func (d *Daemon) entryForWithoutPersistence(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
+	return d.entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, true)
 }
 
-func entryForWithoutPersistenceNoHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
-	return entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, false)
+func (d *Daemon) entryForWithoutPersistenceNoHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier) decisionlog.Entry {
+	return d.entryForWithoutPersistenceWithHash(decision, reason, host, pi, sig, tier, false)
 }
 
-func entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier, includeHash bool) decisionlog.Entry {
+func (d *Daemon) entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier, includeHash bool) decisionlog.Entry {
 	entry := decisionlog.Entry{
 		Decision:  decision,
 		Action:    string(decision),
@@ -83,7 +83,19 @@ func entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, h
 	if includeHash {
 		entry.ExeSHA256 = exeSHA256(pi.Exe)
 	}
+	entry.UserActive = d.userActive()
 	return entry
+}
+
+func (d *Daemon) userActive() *bool {
+	if d.opts.Idle == nil {
+		return nil
+	}
+	active, err := d.opts.Idle.Active()
+	if err != nil {
+		return nil
+	}
+	return &active
 }
 
 // writeFlow records how a connection actually behaved, once it has closed. It
@@ -165,41 +177,41 @@ func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig
 
 func (d *Daemon) decideBranchWithIdentity(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) (decisionOutcome, decisionlog.Entry) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
-		return outcomeExempt, entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
+		return outcomeExempt, d.entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
 	}
 	switch d.opts.Allow.Decide(host) {
 	case allowlist.Allow:
 		if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
 			return outcome, entry
 		}
-		return outcomeAllow, entryFor(decisionlog.DecisionAllow, "", host, pi, sig, decisionlog.TierDefault)
+		return outcomeAllow, d.entryFor(decisionlog.DecisionAllow, "", host, pi, sig, decisionlog.TierDefault)
 	case allowlist.Deny:
-		return outcomeDeny, entryFor(decisionlog.DecisionDeny, "host_denylisted", host, pi, sig, decisionlog.TierDefault)
+		return outcomeDeny, d.entryFor(decisionlog.DecisionDeny, "host_denylisted", host, pi, sig, decisionlog.TierDefault)
 	default: // allowlist.Unknown
 		var match catalog.MatchResult
 		if d.opts.Catalog != nil {
 			match = d.opts.Catalog.Lookup(id, host)
 			if match.NeverHit {
-				return outcomeDeny, entryFor(decisionlog.DecisionDeny, "catalog_never_hit", host, pi, sig, decisionlog.TierCatalogFact)
+				return outcomeDeny, d.entryFor(decisionlog.DecisionDeny, "catalog_never_hit", host, pi, sig, decisionlog.TierCatalogFact)
 			}
 			if match.StaleBinary && d.staleGraceAvailable(id.ExePath) {
 				if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
 					return outcome, entry
 				}
 				if d.recordPending(match.Entry, id, host) {
-					return outcomeAllow, entryFor(decisionlog.DecisionAllow, "unratified_binary_grace", host, pi, sig, decisionlog.TierDefault)
+					return outcomeAllow, d.entryFor(decisionlog.DecisionAllow, "unratified_binary_grace", host, pi, sig, decisionlog.TierDefault)
 				}
 			}
 			if match.Found && match.Authoritative {
 				if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
 					return outcome, entry
 				}
-				return outcomeAllow, entryFor(decisionlog.DecisionAllow, "catalog_fact", host, pi, sig, decisionlog.TierCatalogFact)
+				return outcomeAllow, d.entryFor(decisionlog.DecisionAllow, "catalog_fact", host, pi, sig, decisionlog.TierCatalogFact)
 			}
 		}
 		if d.opts.Prompt == nil {
 			// v0.1 fallback: no prompt configured → default-deny.
-			return outcomeDeny, entryFor(decisionlog.DecisionDeny, "host_unknown_no_prompt", host, pi, sig, decisionlog.TierDefault)
+			return outcomeDeny, d.entryFor(decisionlog.DecisionDeny, "host_unknown_no_prompt", host, pi, sig, decisionlog.TierDefault)
 		}
 		req := prompt.Request{
 			Proc:         pi,
@@ -219,9 +231,9 @@ func (d *Daemon) decideBranchWithIdentity(host string, dstIP net.IP, pi procid.P
 			if outcome, entry, blocked := d.bindDest(host, dstIP, pi, sig); blocked {
 				return outcome, entry
 			}
-			return outcomeAllow, entryFor(decisionlog.DecisionAllow, "user_allowed", host, pi, sig, decisionlog.TierPrompt)
+			return outcomeAllow, d.entryFor(decisionlog.DecisionAllow, "user_allowed", host, pi, sig, decisionlog.TierPrompt)
 		default:
-			return outcomeDeny, entryFor(decisionlog.DecisionDeny, "user_denied_or_timeout", host, pi, sig, decisionlog.TierPrompt)
+			return outcomeDeny, d.entryFor(decisionlog.DecisionDeny, "user_denied_or_timeout", host, pi, sig, decisionlog.TierPrompt)
 		}
 	}
 }
@@ -395,9 +407,9 @@ func (d *Daemon) bindDest(host string, dstIP net.IP, pi procid.ProcInfo, sig sig
 	ok, err := d.opts.Binder.DestMatches(host, dstIP)
 	switch {
 	case err != nil:
-		return outcomeDeny, entryFor(decisionlog.DecisionDeny, "sni_ip_unverifiable", host, pi, sig, decisionlog.TierDefault), true
+		return outcomeDeny, d.entryFor(decisionlog.DecisionDeny, "sni_ip_unverifiable", host, pi, sig, decisionlog.TierDefault), true
 	case !ok:
-		return outcomeDeny, entryFor(decisionlog.DecisionDeny, "sni_ip_mismatch", host, pi, sig, decisionlog.TierDefault), true
+		return outcomeDeny, d.entryFor(decisionlog.DecisionDeny, "sni_ip_mismatch", host, pi, sig, decisionlog.TierDefault), true
 	default:
 		return outcomeAllow, decisionlog.Entry{}, false
 	}
@@ -409,7 +421,7 @@ func (d *Daemon) handle(conn net.Conn) {
 
 	dstIP, dstPort, err := d.opts.Kernel.OriginalDest(conn)
 	if err != nil {
-		_ = d.opts.Log.Write(entryFor(decisionlog.DecisionDeny, "original_dest_lookup_failed", "", procid.ProcInfo{}, signature.SignedIdentity{}, ""))
+		_ = d.opts.Log.Write(d.entryFor(decisionlog.DecisionDeny, "original_dest_lookup_failed", "", procid.ProcInfo{}, signature.SignedIdentity{}, ""))
 		return
 	}
 
@@ -428,12 +440,12 @@ func (d *Daemon) handle(conn net.Conn) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
 		upstream, err := d.dial("tcp", net.JoinHostPort(dstIP.String(), itoa(dstPort)))
 		if err != nil {
-			entry := entryForWithoutPersistenceNoHash(decisionlog.DecisionDeny, "exempt_upstream_dial_failed: "+err.Error(), "", pi, sig, "")
+			entry := d.entryForWithoutPersistenceNoHash(decisionlog.DecisionDeny, "exempt_upstream_dial_failed: "+err.Error(), "", pi, sig, "")
 			entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 			_ = d.opts.Log.Write(entry)
 			return
 		}
-		entry := entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", "", pi, sig, "")
+		entry := d.entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", "", pi, sig, "")
 		entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 		_ = d.opts.Log.Write(entry)
 		conn.SetReadDeadline(timeZero())
@@ -447,7 +459,7 @@ func (d *Daemon) handle(conn net.Conn) {
 	buf := make([]byte, tlsparse.MaxClientHelloBytes)
 	n, err := io.ReadAtLeast(conn, buf, 5)
 	if err != nil {
-		entry := entryFor(decisionlog.DecisionDeny, "read_clienthello_failed", "", pi, sig, "")
+		entry := d.entryFor(decisionlog.DecisionDeny, "read_clienthello_failed", "", pi, sig, "")
 		entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 		_ = d.opts.Log.Write(entry)
 		return
@@ -464,7 +476,7 @@ func (d *Daemon) handle(conn net.Conn) {
 
 	host, err := tlsparse.ParseSNI(buf[:n])
 	if err != nil {
-		entry := entryFor(decisionlog.DecisionDeny, "sni_parse_failed: "+err.Error(), "", pi, sig, "")
+		entry := d.entryFor(decisionlog.DecisionDeny, "sni_parse_failed: "+err.Error(), "", pi, sig, "")
 		entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 		_ = d.opts.Log.Write(entry)
 		return

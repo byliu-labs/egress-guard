@@ -21,6 +21,7 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/drift"
 	"github.com/byliu-labs/egress-guard/internal/exempt"
 	"github.com/byliu-labs/egress-guard/internal/explain"
+	"github.com/byliu-labs/egress-guard/internal/idle"
 	"github.com/byliu-labs/egress-guard/internal/kernel"
 	"github.com/byliu-labs/egress-guard/internal/pending"
 	"github.com/byliu-labs/egress-guard/internal/procid"
@@ -36,6 +37,11 @@ type startFlags struct {
 	observeOnly            bool
 	decisionLogMaxSegments int
 }
+
+const (
+	idleProbeTTL    = 15 * time.Second
+	idleProbeMaxAge = 2 * time.Minute
+)
 
 func parseStartFlags(args []string) startFlags {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
@@ -135,6 +141,11 @@ func Start(args []string) error {
 	if err != nil {
 		return err
 	}
+	idleProbe := idle.NewCached(idle.NewSystemProbe(), idleProbeTTL, idleProbeMaxAge)
+	idleProbe.OnError = func(err error) { stdLogger{}.Errorf("idle: probe failed: %v", err) }
+	// Prime the cache: the first adjudicated connection should not also be
+	// the first probe, or it would be logged with the bit absent.
+	_, _ = idleProbe.Active()
 
 	baselineCache, err := baselineCachePath()
 	if err != nil {
@@ -174,6 +185,7 @@ func Start(args []string) error {
 		Explainer:   explainer,
 		Logger:      stdLogger{},
 		Pending:     pendingStore,
+		Idle:        idleProbe,
 		ObserveOnly: flags.observeOnly,
 	})
 	if err != nil {

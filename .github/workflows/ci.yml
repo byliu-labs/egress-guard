@@ -20,8 +20,10 @@ jobs:
         run: make test
       - name: Build
         run: make build
-      - name: Linux nebridge compatibility
-        run: GOOS=linux go build ./internal/nebridge/
+      - name: Linux cross-compile
+        # Every _darwin.go needs its _default.go counterpart to still build.
+        # Scoped to nebridge this missed internal/idle entirely.
+        run: GOOS=linux go build ./...
       - name: Vet
         run: go vet ./...
 

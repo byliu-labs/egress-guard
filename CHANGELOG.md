@@ -7,6 +7,13 @@ versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`user_active` on decision-log records.** Each decision now records whether a
+  human had touched the keyboard or mouse in the preceding five minutes, so a
+  3 a.m. beacon can be told apart from you working at 3 a.m. Sampled in the
+  background from `ioreg` (`HIDIdleTime`) — never on the connection path — and
+  omitted entirely when no usable sample exists, which never means "idle". The
+  bit is observational: nothing in the allow/deny path reads it, and it is not
+  part of the telemetry payload. macOS only; absent on other platforms.
 - **macOS menu-bar app (`EgressGuard.app`).** One double-click installs the pf
   anchor and daemon behind a single admin prompt, shows live status and recent
   blocks, and offers one-click allow, pause/resume, start-at-login, and clean
