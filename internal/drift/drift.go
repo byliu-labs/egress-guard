@@ -9,6 +9,7 @@ package drift
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,6 +58,9 @@ type Event struct {
 	FirstSeen time.Time
 	Rank      int
 	Log       decisionlog.Entry
+	// Score is observational joint-distance metadata; decision policy does not
+	// branch on it until calibration against real history is complete.
+	Score Score
 }
 
 const minStableDays = 2
@@ -160,6 +164,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 		FirstSeen: firstSeen,
 		Log:       e,
 	}
+	ev.Score = b.ScoreLive(id, e.Host, decisionlog.Joined{Decision: e})
 
 	if b.pairs[pKey] {
 		ev.Class = ClassKnown
@@ -195,6 +200,37 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 		ev.Rank = rankNovelPairing
 	}
 	return ev
+}
+
+// ScoreLive scores one connection against the selected pair cloud. A live
+// ClientHello has no close-time flow metadata, so a known pair receives a
+// finite observational score without inventing byte counts.
+func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined) Score {
+	cloud, scale := b.CloudFor(id, host)
+	point, ok := PointFrom(joined, b.LastSeenFor(id, host))
+	if !ok {
+		if len(cloud) == 0 {
+			return Score{Distance: math.Inf(1)}
+		}
+		return Score{Distance: 0, Neighbours: len(cloud)}
+	}
+	return ScorePoint(point, cloud, scale)
+}
+
+// Explain renders the score's human-facing attribution without treating an
+// empty history as a fabricated comparison.
+func (event Event) Explain() string {
+	if math.IsInf(event.Score.Distance, 1) || !event.Score.HasNearest {
+		return "This pairing has no history on this machine."
+	}
+	names := make([]string, 0, len(event.Score.Dominant))
+	for _, dim := range event.Score.Dominant {
+		names = append(names, DimNames[dim])
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("This connection is typical of the %d comparable ones before it.", event.Score.Neighbours)
+	}
+	return fmt.Sprintf("Unusual %s compared with the %d most similar of this pair's previous connections.", strings.Join(names, " and "), event.Score.Neighbours)
 }
 
 // Analyze classifies a window and returns only drift, highest-signal first.
