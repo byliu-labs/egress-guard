@@ -9,9 +9,8 @@ import (
 )
 
 func TestBaselineSchemaVersion_WasBumped(t *testing.T) {
-	if baselineSchemaVersion < 4 {
-		t.Errorf("baselineSchemaVersion = %d; adding a dimension changes every "+
-			"distance and must bump it", baselineSchemaVersion)
+	if baselineSchemaVersion < 5 {
+		t.Errorf("baselineSchemaVersion = %d; adding cloud pair metadata must bump it", baselineSchemaVersion)
 	}
 }
 
@@ -27,6 +26,19 @@ func TestLoadBaseline_PreviousPointSpaceDoesNotLoad(t *testing.T) {
 	}
 	b, err := LoadBaseline(p, &catalog.Catalog{})
 	if err == nil && b != nil {
-		t.Fatal("a version-3 snapshot must not load into a version-4 point space")
+		t.Fatal("a version-3 snapshot must not load into a version-5 point space")
+	}
+}
+
+func TestLoadBaseline_PreviousCloudMetadataDoesNotLoad(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "baseline.json")
+	old := `{"schema_version":4,"built_through":"2026-08-01T00:00:00Z",` +
+		`"identities":["a"],"hosts":["b"],"pairs":["a b"],"cloud_points":{}}`
+	if err := os.WriteFile(p, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := LoadBaseline(p, &catalog.Catalog{})
+	if err == nil && b != nil {
+		t.Fatal("a version-4 snapshot lacks cloud pair metadata and must not load")
 	}
 }

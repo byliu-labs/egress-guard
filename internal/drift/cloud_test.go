@@ -56,6 +56,26 @@ func TestBaselinePairsIncludesFlowlessDecision(t *testing.T) {
 	}
 }
 
+func TestBaselinePairsSurviveSaveAndLoad(t *testing.T) {
+	entries := flowPair("a", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)
+	path := t.TempDir() + "/baseline.json"
+	if err := BuildBaseline(&catalog.Catalog{}, entries).Save(path); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadBaseline(path, &catalog.Catalog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairs := loaded.Pairs()
+	if len(pairs) != 1 {
+		t.Fatalf("loaded Pairs() returned %d pairs, want 1", len(pairs))
+	}
+	if pairs[0].Host != "github.com" || pairs[0].Identity.ExeBasename != "git" {
+		t.Fatalf("loaded pair = %+v, want git -> github.com", pairs[0])
+	}
+}
+
 func TestBuildBaselineAccumulatesSeparatedAndUnpoisonedClouds(t *testing.T) {
 	entries := append(flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow), flowPair("b1", "2026-08-17T14:01:00Z", "/usr/bin/curl", "evil.example", 2, decisionlog.DecisionDeny)...)
 	entries = append(entries, flowPair("a2", "2026-08-17T14:01:00Z", "/usr/bin/git", "github.com", 3, decisionlog.DecisionAllow)...)

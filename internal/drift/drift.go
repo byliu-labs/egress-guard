@@ -65,10 +65,9 @@ type Event struct {
 
 const minStableDays = 2
 
-// 4: point clouds gained DimConcurrency, which changes every distance, so a
-// version-3 snapshot describes points in a different space and must be rebuilt
-// from the decision log rather than loaded.
-const baselineSchemaVersion = 4
+// 5: clouds gained Pair metadata for inspection tooling. Version-4 snapshots
+// lack that one-way key metadata and must be rebuilt from the decision log.
+const baselineSchemaVersion = 5
 
 const (
 	rankNeverHit         = 4
@@ -91,6 +90,7 @@ type baselineSnapshot struct {
 	Pairs         []string           `json:"pairs"`
 	CloudPoints   map[string][]Point `json:"cloud_points,omitempty"`
 	CloudLast     map[string]string  `json:"cloud_last,omitempty"`
+	CloudMeta     map[string]Pair    `json:"cloud_meta"`
 }
 
 // BuildBaseline folds decision-log history into stable normal traffic. Only
@@ -296,6 +296,7 @@ func (b *Baseline) Save(path string) error {
 		Pairs:         sortedKeys(b.pairs),
 		CloudPoints:   b.clouds.points,
 		CloudLast:     cloudLastStrings(b.clouds),
+		CloudMeta:     b.clouds.meta,
 	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -333,12 +334,16 @@ func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
 	if snap.SchemaVersion != baselineSchemaVersion {
 		return nil, fmt.Errorf("drift: baseline schema version %d unsupported (want %d)", snap.SchemaVersion, baselineSchemaVersion)
 	}
+	if snap.CloudMeta == nil {
+		return nil, fmt.Errorf("drift: baseline missing cloud pair metadata")
+	}
 	builtThrough, _ := time.Parse(time.RFC3339, snap.BuiltThrough)
 	cloud := newClouds()
 	cloud.points = snap.CloudPoints
 	if cloud.points == nil {
 		cloud.points = map[string][]Point{}
 	}
+	cloud.meta = snap.CloudMeta
 	for key, value := range snap.CloudLast {
 		if timestamp, err := time.Parse(time.RFC3339, value); err == nil {
 			cloud.last[key] = timestamp
