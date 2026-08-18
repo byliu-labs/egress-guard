@@ -1,12 +1,12 @@
 package cli
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/drift"
 )
 
 // Bumping the schema makes every installed machine's cache stale on upgrade.
@@ -26,17 +26,11 @@ func TestLoadStartupBaseline_SurvivesAStaleCache(t *testing.T) {
 	if b == nil {
 		t.Fatal("a stale cache must produce a rebuilt baseline, not nil")
 	}
-	data, err := os.ReadFile(cache)
+	loaded, err := drift.LoadBaseline(cache, &catalog.Catalog{})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("rebuilt cache must load with the current persistence contract: %v", err)
 	}
-	var snapshot struct {
-		SchemaVersion int `json:"schema_version"`
-	}
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.SchemaVersion != 4 {
-		t.Fatalf("cache schema version = %d, want rebuilt version 4", snapshot.SchemaVersion)
+	if loaded == nil {
+		t.Fatal("rebuilt cache loaded as nil baseline")
 	}
 }
