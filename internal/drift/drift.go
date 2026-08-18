@@ -9,6 +9,7 @@ package drift
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -43,6 +44,7 @@ type Baseline struct {
 	identities   map[string]bool
 	hosts        map[string]bool
 	pairs        map[string]bool
+	clouds       *clouds
 	builtThrough time.Time
 }
 
@@ -56,11 +58,14 @@ type Event struct {
 	FirstSeen time.Time
 	Rank      int
 	Log       decisionlog.Entry
+	// Score is observational joint-distance metadata; decision policy does not
+	// branch on it until calibration against real history is complete.
+	Score Score
 }
 
 const minStableDays = 2
 
-const baselineSchemaVersion = 2
+const baselineSchemaVersion = 3
 
 const (
 	rankNeverHit         = 4
@@ -76,11 +81,13 @@ type pairStats struct {
 }
 
 type baselineSnapshot struct {
-	SchemaVersion int      `json:"schema_version"`
-	BuiltThrough  string   `json:"built_through"`
-	Identities    []string `json:"identities"`
-	Hosts         []string `json:"hosts"`
-	Pairs         []string `json:"pairs"`
+	SchemaVersion int                `json:"schema_version"`
+	BuiltThrough  string             `json:"built_through"`
+	Identities    []string           `json:"identities"`
+	Hosts         []string           `json:"hosts"`
+	Pairs         []string           `json:"pairs"`
+	CloudPoints   map[string][]Point `json:"cloud_points,omitempty"`
+	CloudLast     map[string]string  `json:"cloud_last,omitempty"`
 }
 
 // BuildBaseline folds decision-log history into stable normal traffic. Only
@@ -99,7 +106,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		if !foldsIntoBaseline(e) {
 			continue
 		}
-		id := identityKey(identityFromEntry(e))
+		id := identityKey(IdentityFromEntry(e))
 		host := hostKey(e.Host)
 		pair := pairKey(id, host)
 		stats, ok := byPair[pair]
@@ -124,6 +131,15 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		b.pairs[pair] = true
 	}
 	b.builtThrough = latest
+	b.clouds = newClouds()
+	for _, joined := range decisionlog.Join(entries) {
+		if !foldsIntoBaseline(joined.Decision) {
+			continue
+		}
+		identity := IdentityFromEntry(joined.Decision)
+		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), joined)
+	}
+	b.clouds.finish()
 	return b
 }
 
@@ -135,7 +151,7 @@ func foldsIntoBaseline(e decisionlog.Entry) bool {
 // entry decision because drift asks whether this pair is normal, not whether
 // this attempt was allowed.
 func (b *Baseline) Classify(e decisionlog.Entry) Event {
-	id := identityFromEntry(e)
+	id := IdentityFromEntry(e)
 	idKey := identityKey(id)
 	hKey := hostKey(e.Host)
 	pKey := pairKey(idKey, hKey)
@@ -148,6 +164,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 		FirstSeen: firstSeen,
 		Log:       e,
 	}
+	ev.Score = b.ScoreLive(id, e.Host, decisionlog.Joined{Decision: e})
 
 	if b.pairs[pKey] {
 		ev.Class = ClassKnown
@@ -183,6 +200,37 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 		ev.Rank = rankNovelPairing
 	}
 	return ev
+}
+
+// ScoreLive scores one connection against the selected pair cloud. A live
+// ClientHello has no close-time flow metadata, so a known pair receives a
+// finite observational score without inventing byte counts.
+func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined) Score {
+	point, ok := PointFrom(joined, b.LastSeenFor(id, host))
+	if !ok {
+		return Score{}
+	}
+	cloud, scale := b.CloudFor(id, host)
+	return ScorePoint(point, cloud, scale)
+}
+
+// Explain renders the score's human-facing attribution without treating an
+// empty history as a fabricated comparison.
+func (event Event) Explain() string {
+	if !event.Score.Scored {
+		return "Joint drift score is not available until this connection closes."
+	}
+	if math.IsInf(event.Score.Distance, 1) || !event.Score.HasNearest {
+		return "This pairing has no history on this machine."
+	}
+	names := make([]string, 0, len(event.Score.Dominant))
+	for _, dim := range event.Score.Dominant {
+		names = append(names, DimNames[dim])
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("This connection is typical of the %d comparable ones before it.", event.Score.Neighbours)
+	}
+	return fmt.Sprintf("Unusual %s compared with the %d most similar of this pair's previous connections.", strings.Join(names, " and "), event.Score.Neighbours)
 }
 
 // Analyze classifies a window and returns only drift, highest-signal first.
@@ -230,6 +278,8 @@ func (b *Baseline) Save(path string) error {
 		Identities:    sortedKeys(b.identities),
 		Hosts:         sortedKeys(b.hosts),
 		Pairs:         sortedKeys(b.pairs),
+		CloudPoints:   b.clouds.points,
+		CloudLast:     cloudLastStrings(b.clouds),
 	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -261,17 +311,43 @@ func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("drift: parse baseline: %w", err)
 	}
+	if snap.SchemaVersion == 2 {
+		return nil, os.ErrNotExist
+	}
 	if snap.SchemaVersion != baselineSchemaVersion {
 		return nil, fmt.Errorf("drift: baseline schema version %d unsupported (want %d)", snap.SchemaVersion, baselineSchemaVersion)
 	}
 	builtThrough, _ := time.Parse(time.RFC3339, snap.BuiltThrough)
+	cloud := newClouds()
+	cloud.points = snap.CloudPoints
+	if cloud.points == nil {
+		cloud.points = map[string][]Point{}
+	}
+	for key, value := range snap.CloudLast {
+		if timestamp, err := time.Parse(time.RFC3339, value); err == nil {
+			cloud.last[key] = timestamp
+		}
+	}
+	cloud.finish()
 	return &Baseline{
 		cat:          cat,
 		identities:   sliceToSet(snap.Identities),
 		hosts:        sliceToSet(snap.Hosts),
 		pairs:        sliceToSet(snap.Pairs),
+		clouds:       cloud,
 		builtThrough: builtThrough,
 	}, nil
+}
+
+func cloudLastStrings(cloud *clouds) map[string]string {
+	if cloud == nil {
+		return nil
+	}
+	last := make(map[string]string, len(cloud.last))
+	for key, timestamp := range cloud.last {
+		last[key] = timestamp.UTC().Format(time.RFC3339)
+	}
+	return last
 }
 
 func sortedKeys(m map[string]bool) []string {
@@ -291,7 +367,10 @@ func sliceToSet(s []string) map[string]bool {
 	return out
 }
 
-func identityFromEntry(e decisionlog.Entry) catalog.Identity {
+// IdentityFromEntry is the single identity-key construction used by baseline
+// building and calibration. A hash tied to an absolute executable path is
+// path-sensitive, so callers must not reconstruct this identity by hand.
+func IdentityFromEntry(e decisionlog.Entry) catalog.Identity {
 	base := filepath.Base(e.Exe)
 	if base == "" || base == "." {
 		base = e.Comm

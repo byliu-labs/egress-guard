@@ -68,9 +68,9 @@ func TestIdentityFromEntry(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := identityFromEntry(tt.e)
+			got := IdentityFromEntry(tt.e)
 			if got != tt.want {
-				t.Errorf("identityFromEntry(%+v) = %+v, want %+v", tt.e, got, tt.want)
+				t.Errorf("IdentityFromEntry(%+v) = %+v, want %+v", tt.e, got, tt.want)
 			}
 		})
 	}
