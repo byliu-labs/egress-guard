@@ -34,6 +34,28 @@ func TestBuildBaselineHistoricalPointsCarryConcurrency(t *testing.T) {
 	}
 }
 
+func TestBaselinePairsIncludesFlowlessDecision(t *testing.T) {
+	entry := decisionlog.Entry{
+		Kind:      decisionlog.KindDecision,
+		ConnID:    "open",
+		Timestamp: "2026-08-17T14:00:00Z",
+		Decision:  decisionlog.DecisionAllow,
+		Exe:       "/usr/bin/git",
+		Host:      "github.com",
+	}
+
+	pairs := BuildBaseline(&catalog.Catalog{}, []decisionlog.Entry{entry}).Pairs()
+	if len(pairs) != 1 {
+		t.Fatalf("Pairs() returned %d pairs, want 1", len(pairs))
+	}
+	if pairs[0].Host != entry.Host {
+		t.Errorf("Pairs()[0].Host = %q, want %q", pairs[0].Host, entry.Host)
+	}
+	if pairs[0].Identity.ExeBasename != "git" {
+		t.Errorf("Pairs()[0].Identity.ExeBasename = %q, want git", pairs[0].Identity.ExeBasename)
+	}
+}
+
 func TestBuildBaselineAccumulatesSeparatedAndUnpoisonedClouds(t *testing.T) {
 	entries := append(flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow), flowPair("b1", "2026-08-17T14:01:00Z", "/usr/bin/curl", "evil.example", 2, decisionlog.DecisionDeny)...)
 	entries = append(entries, flowPair("a2", "2026-08-17T14:01:00Z", "/usr/bin/git", "github.com", 3, decisionlog.DecisionAllow)...)

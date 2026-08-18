@@ -142,7 +142,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 			continue
 		}
 		identity := IdentityFromEntry(joined.Decision)
-		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), joined, concurrency)
+		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), identity, joined.Decision.Host, joined, concurrency)
 	}
 	b.clouds.finish()
 	return b
