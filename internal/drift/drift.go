@@ -159,13 +159,6 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 	return b.classify(e, 0)
 }
 
-// ClassifyLive scores a connection that is still open. concurrency is the
-// number of other connections the daemon currently has in flight; it is not
-// persisted and complements the concurrency derived from closed log records.
-func (b *Baseline) ClassifyLive(e decisionlog.Entry, concurrency int) Event {
-	return b.classify(e, concurrency)
-}
-
 func (b *Baseline) classify(e decisionlog.Entry, concurrency int) Event {
 	id := IdentityFromEntry(e)
 	idKey := identityKey(id)

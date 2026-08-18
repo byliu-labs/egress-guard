@@ -110,6 +110,9 @@ type Daemon struct {
 	mu       sync.Mutex
 	hasher   *procid.ExeHasher
 	inflight *inflight
+	// onCompletedScore is an in-memory observer for completed-flow scoring.
+	// Production leaves it nil; it never affects admission or persistence.
+	onCompletedScore func(drift.Event)
 	// baseline is the drift baseline the decision path consults. It is an
 	// atomic pointer (not opts.Baseline directly) so a background refresher can
 	// swap it while connection goroutines read it without a data race. A nil

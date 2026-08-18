@@ -64,6 +64,7 @@ func (d *Daemon) entryForWithoutPersistenceNoHash(decision decisionlog.Decision,
 
 func (d *Daemon) entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier, includeHash bool) decisionlog.Entry {
 	entry := decisionlog.Entry{
+		Timestamp: timeNow().UTC().Format(time.RFC3339),
 		Decision:  decision,
 		Action:    string(decision),
 		Reason:    reason,
@@ -102,7 +103,7 @@ func (d *Daemon) userActive() *bool {
 // reuses the decision record's identity and destination so the pair can be
 // scored without a join, and carries only counts and elapsed time — never
 // payload. PHILOSOPHY.md §4.8.
-func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int64, started time.Time) {
+func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int64, started time.Time, concurrency int) {
 	if connID == "" {
 		return
 	}
@@ -123,6 +124,10 @@ func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int6
 		BytesUp:    up,
 		BytesDown:  down,
 		DurationMS: timeNow().Sub(started).Milliseconds(),
+	}
+	event := d.classifyCompletedFlow(entry, flow, concurrency)
+	if d.onCompletedScore != nil {
+		d.onCompletedScore(event)
 	}
 	_ = d.opts.Log.Write(flow)
 }
@@ -172,18 +177,10 @@ func attributePersistence(pi procid.ProcInfo) *persist.Source {
 // branch tests can exercise it without needing a live socket and so the logic
 // is robust if the fast-path ever gets refactored.
 func (d *Daemon) decideBranch(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity) (decisionOutcome, decisionlog.Entry) {
-	return d.decideBranchWithConcurrency(host, dstIP, pi, sig, 0)
-}
-
-func (d *Daemon) decideBranchWithConcurrency(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, concurrency int) (decisionOutcome, decisionlog.Entry) {
-	return d.decideBranchWithIdentityAndConcurrency(host, dstIP, pi, sig, d.identityFor(pi, sig), concurrency)
+	return d.decideBranchWithIdentity(host, dstIP, pi, sig, d.identityFor(pi, sig))
 }
 
 func (d *Daemon) decideBranchWithIdentity(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) (decisionOutcome, decisionlog.Entry) {
-	return d.decideBranchWithIdentityAndConcurrency(host, dstIP, pi, sig, id, 0)
-}
-
-func (d *Daemon) decideBranchWithIdentityAndConcurrency(host string, dstIP net.IP, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity, concurrency int) (decisionOutcome, decisionlog.Entry) {
 	if d.opts.Exempt != nil && d.opts.Exempt.IsExempt(pi, sig) {
 		return outcomeExempt, d.entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", host, pi, sig, "")
 	}
@@ -226,7 +223,7 @@ func (d *Daemon) decideBranchWithIdentityAndConcurrency(host string, dstIP net.I
 			Host:         host,
 			RegDom:       prompt.RegisteredDomain(host),
 			CatalogMatch: match,
-			Drift:        d.classifyDriftWithConcurrency(host, pi, sig, id, concurrency),
+			Drift:        d.classifyDrift(host, pi, sig, id),
 			Persistence:  attributePersistence(pi),
 		}
 		if d.opts.Explainer != nil {
@@ -369,10 +366,6 @@ func baseExecutableCacheKey(path string, info os.FileInfo) string {
 }
 
 func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity) drift.Event {
-	return d.classifyDriftWithConcurrency(host, pi, sig, id, 0)
-}
-
-func (d *Daemon) classifyDriftWithConcurrency(host string, pi procid.ProcInfo, sig signature.SignedIdentity, id catalog.Identity, concurrency int) drift.Event {
 	exe := pi.Exe
 	if id.ExePath != "" {
 		exe = id.ExePath
@@ -391,7 +384,7 @@ func (d *Daemon) classifyDriftWithConcurrency(host string, pi procid.ProcInfo, s
 		Cwd:       pi.Cwd,
 	}
 	if b := d.baseline.Load(); b != nil {
-		ev := b.ClassifyLive(entry, concurrency)
+		ev := b.Classify(entry)
 		if catalog.HasDecisionPin(id) {
 			ev.Identity = id
 		}
@@ -405,6 +398,20 @@ func (d *Daemon) classifyDriftWithConcurrency(host string, pi procid.ProcInfo, s
 		FirstSeen: timeNow(),
 		Log:       entry,
 	}
+}
+
+// classifyCompletedFlow scores a spliced connection after its real byte counts
+// and duration are known. Prompt-time classification stays unscored: inventing
+// those values before the splice would distort the behavioural point.
+func (d *Daemon) classifyCompletedFlow(entry, flow decisionlog.Entry, concurrency int) drift.Event {
+	b := d.baseline.Load()
+	if b == nil {
+		return drift.Event{Class: drift.ClassDrift, Reason: drift.ReasonNovelPairing, Host: entry.Host, Log: entry}
+	}
+	ev := b.Classify(entry)
+	id := drift.IdentityFromEntry(entry)
+	ev.Score = b.ScoreLive(id, entry.Host, decisionlog.Joined{Decision: entry, Flow: flow, HasFlow: true}, concurrency)
+	return ev
 }
 
 // bindDest enforces the SNI↔destination-IP binding. It returns blocked=true
@@ -432,6 +439,7 @@ func (d *Daemon) handle(conn net.Conn) {
 	connID := newConnID()
 	d.inflight.open(connID)
 	defer d.inflight.done(connID)
+	concurrency := d.inflight.count(connID)
 	conn.SetReadDeadline(timeNow().Add(clientHelloDeadline))
 
 	dstIP, dstPort, err := d.opts.Kernel.OriginalDest(conn)
@@ -466,7 +474,7 @@ func (d *Daemon) handle(conn net.Conn) {
 		conn.SetReadDeadline(timeZero())
 		started := timeNow()
 		up, down := spliceBoth(conn, upstream)
-		d.writeFlow(entry.ConnID, entry, up, down, started)
+		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency)
 		return
 	}
 
@@ -497,7 +505,7 @@ func (d *Daemon) handle(conn net.Conn) {
 		return
 	}
 
-	outcome, entry := d.decideBranchWithConcurrency(host, dstIP, pi, sig, d.inflight.count(connID))
+	outcome, entry := d.decideBranch(host, dstIP, pi, sig)
 	entry.ConnID = connID
 	entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 	outcome, entry = d.finalizeOutcome(outcome, entry)
@@ -541,7 +549,7 @@ func (d *Daemon) handle(conn net.Conn) {
 		_ = d.opts.Log.Write(entry)
 		started := timeNow()
 		up, down := spliceBoth(conn, upstream)
-		d.writeFlow(entry.ConnID, entry, up, down, started)
+		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency)
 	default: // outcomeDeny (outcomeExempt is handled by fast-path above)
 		_ = d.opts.Log.Write(entry)
 		// Close → TCP RST/FIN to client; client's TLS handshake fails.

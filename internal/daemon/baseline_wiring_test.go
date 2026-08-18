@@ -10,6 +10,23 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
+func TestClassifyCompletedFlowScoresCapturedConcurrency(t *testing.T) {
+	entries := []decisionlog.Entry{
+		{Kind: decisionlog.KindDecision, ConnID: "old-1", Timestamp: "2026-08-17T14:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", Host: "api.example.com"},
+		{Kind: decisionlog.KindFlow, ConnID: "old-1", BytesUp: 10, BytesDown: 10, DurationMS: 10},
+		{Kind: decisionlog.KindDecision, ConnID: "old-2", Timestamp: "2026-08-18T14:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", Host: "api.example.com"},
+		{Kind: decisionlog.KindFlow, ConnID: "old-2", BytesUp: 10, BytesDown: 10, DurationMS: 10},
+	}
+	d := &Daemon{}
+	d.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, entries))
+	decision := decisionlog.Entry{ConnID: "new", Timestamp: "2026-08-19T14:00:00Z", Exe: "/usr/bin/curl", Host: "api.example.com"}
+	flow := decisionlog.Entry{ConnID: "new", BytesUp: 10, BytesDown: 10, DurationMS: 10}
+	event := d.classifyCompletedFlow(decision, flow, 9)
+	if !event.Score.Scored || event.Score.Distance == 0 {
+		t.Fatalf("completed flow score = %+v, want scored concurrency", event.Score)
+	}
+}
+
 // TestClassifyDrift_UsesStoredBaseline proves the baseline stored on a daemon is
 // what classifyDrift consults: a pair the baseline learned as normal classifies
 // as known, not drift. This is the behavioral confirmation that seam #2 is live.
