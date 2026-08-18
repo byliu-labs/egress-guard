@@ -43,6 +43,7 @@ type Baseline struct {
 	identities   map[string]bool
 	hosts        map[string]bool
 	pairs        map[string]bool
+	clouds       *clouds
 	builtThrough time.Time
 }
 
@@ -60,7 +61,7 @@ type Event struct {
 
 const minStableDays = 2
 
-const baselineSchemaVersion = 2
+const baselineSchemaVersion = 3
 
 const (
 	rankNeverHit         = 4
@@ -76,11 +77,13 @@ type pairStats struct {
 }
 
 type baselineSnapshot struct {
-	SchemaVersion int      `json:"schema_version"`
-	BuiltThrough  string   `json:"built_through"`
-	Identities    []string `json:"identities"`
-	Hosts         []string `json:"hosts"`
-	Pairs         []string `json:"pairs"`
+	SchemaVersion int                `json:"schema_version"`
+	BuiltThrough  string             `json:"built_through"`
+	Identities    []string           `json:"identities"`
+	Hosts         []string           `json:"hosts"`
+	Pairs         []string           `json:"pairs"`
+	CloudPoints   map[string][]Point `json:"cloud_points,omitempty"`
+	CloudLast     map[string]string  `json:"cloud_last,omitempty"`
 }
 
 // BuildBaseline folds decision-log history into stable normal traffic. Only
@@ -124,6 +127,15 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		b.pairs[pair] = true
 	}
 	b.builtThrough = latest
+	b.clouds = newClouds()
+	for _, joined := range decisionlog.Join(entries) {
+		if !foldsIntoBaseline(joined.Decision) {
+			continue
+		}
+		identity := identityFromEntry(joined.Decision)
+		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), joined)
+	}
+	b.clouds.finish()
 	return b
 }
 
@@ -230,6 +242,8 @@ func (b *Baseline) Save(path string) error {
 		Identities:    sortedKeys(b.identities),
 		Hosts:         sortedKeys(b.hosts),
 		Pairs:         sortedKeys(b.pairs),
+		CloudPoints:   b.clouds.points,
+		CloudLast:     cloudLastStrings(b.clouds),
 	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -261,17 +275,43 @@ func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("drift: parse baseline: %w", err)
 	}
+	if snap.SchemaVersion == 2 {
+		return nil, os.ErrNotExist
+	}
 	if snap.SchemaVersion != baselineSchemaVersion {
 		return nil, fmt.Errorf("drift: baseline schema version %d unsupported (want %d)", snap.SchemaVersion, baselineSchemaVersion)
 	}
 	builtThrough, _ := time.Parse(time.RFC3339, snap.BuiltThrough)
+	cloud := newClouds()
+	cloud.points = snap.CloudPoints
+	if cloud.points == nil {
+		cloud.points = map[string][]Point{}
+	}
+	for key, value := range snap.CloudLast {
+		if timestamp, err := time.Parse(time.RFC3339, value); err == nil {
+			cloud.last[key] = timestamp
+		}
+	}
+	cloud.finish()
 	return &Baseline{
 		cat:          cat,
 		identities:   sliceToSet(snap.Identities),
 		hosts:        sliceToSet(snap.Hosts),
 		pairs:        sliceToSet(snap.Pairs),
+		clouds:       cloud,
 		builtThrough: builtThrough,
 	}, nil
+}
+
+func cloudLastStrings(cloud *clouds) map[string]string {
+	if cloud == nil {
+		return nil
+	}
+	last := make(map[string]string, len(cloud.last))
+	for key, timestamp := range cloud.last {
+		last[key] = timestamp.UTC().Format(time.RFC3339)
+	}
+	return last
 }
 
 func sortedKeys(m map[string]bool) []string {

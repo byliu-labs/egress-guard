@@ -1,0 +1,46 @@
+package drift
+
+import (
+	"testing"
+
+	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+)
+
+func flowPair(connID, timestamp, exe, host string, bytesUp int64, decision decisionlog.Decision) []decisionlog.Entry {
+	yes := true
+	return []decisionlog.Entry{
+		{Kind: decisionlog.KindDecision, ConnID: connID, Timestamp: timestamp, Exe: exe, Host: host, Decision: decision, UserActive: &yes},
+		{Kind: decisionlog.KindFlow, ConnID: connID, Timestamp: timestamp, BytesUp: bytesUp, BytesDown: 100, DurationMS: 50},
+	}
+}
+
+func TestBuildBaselineAccumulatesSeparatedAndUnpoisonedClouds(t *testing.T) {
+	entries := append(flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow), flowPair("b1", "2026-08-17T14:01:00Z", "/usr/bin/curl", "evil.example", 2, decisionlog.DecisionDeny)...)
+	entries = append(entries, flowPair("a2", "2026-08-17T14:01:00Z", "/usr/bin/git", "github.com", 3, decisionlog.DecisionAllow)...)
+	baseline := BuildBaseline(&catalog.Catalog{}, entries)
+	git, _ := baseline.CloudFor(catalog.Identity{ExeBasename: "git"}, "github.com")
+	evil, _ := baseline.CloudFor(catalog.Identity{ExeBasename: "curl"}, "evil.example")
+	if len(git) != 2 || len(evil) != 0 {
+		t.Fatalf("git=%d evil=%d", len(git), len(evil))
+	}
+	if got := git[1][DimInterArrival]; got < 4 || got > 4.2 {
+		t.Fatalf("pair-local gap = %v", got)
+	}
+}
+
+func TestBaselineCloudsSurviveSaveAndLoad(t *testing.T) {
+	entries := append(flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow), flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 2, decisionlog.DecisionAllow)...)
+	path := t.TempDir() + "/baseline.json"
+	if err := BuildBaseline(&catalog.Catalog{}, entries).Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadBaseline(path, &catalog.Catalog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloud, _ := loaded.CloudFor(catalog.Identity{ExeBasename: "git"}, "github.com")
+	if len(cloud) != 2 {
+		t.Fatalf("loaded cloud = %d", len(cloud))
+	}
+}
