@@ -32,7 +32,7 @@ const launchctlPrintRunning = `system/com.byliu.egress-guard.daemon = {
 
 const launchctlPrintLoadedNotRunning = `system/com.byliu.egress-guard.daemon = {
 	active count = 0
-	state = waiting
+	state = not running
 	program = /usr/local/bin/egress-guard
 }`
 
@@ -197,7 +197,16 @@ func TestPrintPlatformStatus_LoadedWithoutPIDIsNotRunning(t *testing.T) {
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
 	}
-	if out := buf.String(); !strings.Contains(out, "boot-daemon: not running (KeepAlive should restart it shortly)") {
+	out := buf.String()
+	// The claim this PR rests on: a job launchd has bootstrapped is ENABLED
+	// even while its process is down between KeepAlive restarts. Without this
+	// line, keying ENABLED on BootDaemonPID>0 instead of BootDaemonLoaded
+	// passes the whole suite while rendering "NOT enabled (run sudo
+	// egress-guard install)" over a healthy install.
+	if !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
+		t.Errorf("status = %q; a bootstrapped job is enabled even with no live process", out)
+	}
+	if !hasLine(out, "boot-daemon: not running (KeepAlive should restart it shortly)") {
 		t.Errorf("status = %q, want a queryable not-running observation", out)
 	}
 }
@@ -374,29 +383,5 @@ func TestPrintPlatformStatus_QueryableJobEarnsEnabled(t *testing.T) {
 	}
 	if out := buf.String(); !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
 		t.Errorf("status = %q, want ENABLED for a job launchd confirmed", out)
-	}
-}
-
-// `launchctl list <label>` asks the user domain and fails for a system job even
-// when the system job is running. Status must use the explicit system-domain
-// print query, which is available to an unprivileged user.
-func TestPrintPlatformStatus_UsesSystemDomainPrintWithoutRoot(t *testing.T) {
-	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
-	stubEuid(t, 501)
-
-	var buf bytes.Buffer
-	if err := printPlatformStatus(&buf); err != nil {
-		t.Fatalf("printPlatformStatus: %v", err)
-	}
-	out := buf.String()
-	if !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
-		t.Errorf("status = %q; a running system-domain job is enabled", out)
-	}
-	if !hasLine(out, "boot-daemon: running (pid 893)") {
-		t.Errorf("status = %q; system-domain print should provide the PID", out)
-	}
-	if strings.Contains(out, "unknown") {
-		t.Errorf("status = %q; explicit system-domain print answered without root", out)
 	}
 }

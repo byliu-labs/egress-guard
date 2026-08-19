@@ -5,6 +5,8 @@ package cli
 import (
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -97,12 +99,26 @@ func TestSystemDomainPrintAnswersUnprivileged(t *testing.T) {
 			tried = append(tried, label)
 			continue
 		}
+		// Independently pull the pid out of the real dump, so this asserts the
+		// parser found THE JOB'S pid rather than merely some positive integer.
+		// Real output carries confounders directly above it — opendirectoryd
+		// emits "runs = 1" on the line before "pid = N" — and a regex loosened
+		// to any `word = <int>` would otherwise return 1 (launchd) and pass.
+		want, ok := pidFromRealDump(string(out))
+		if !ok {
+			// Loaded but idle: no pid line at all. 246 of 423 system jobs on a
+			// typical machine are in this state, so try the next candidate
+			// rather than failing on an unrelated job's health.
+			tried = append(tried, label)
+			continue
+		}
 		got := parseDaemonPrint(string(out))
 		if !got.Loaded {
 			t.Fatalf("parseDaemonPrint reported not loaded for system/%s", label)
 		}
-		if got.PID <= 0 {
-			t.Fatalf("parseDaemonPrint found no pid in real output for system/%s:\n%s", label, out)
+		if got.PID != want {
+			t.Fatalf("parseDaemonPrint(system/%s) pid = %d, want %d (from the literal `pid =` line):\n%s",
+				label, got.PID, want, out)
 		}
 		// Informational, not a requirement of our code: `launchctl list` is
 		// expected to fail here because it resolves in the user domain. If it
@@ -113,4 +129,21 @@ func TestSystemDomainPrintAnswersUnprivileged(t *testing.T) {
 		return
 	}
 	t.Skipf("no system daemon from %v was reachable; nothing to assert about the domain", tried)
+}
+
+// pidFromRealDump finds the job's own pid line without reusing the production
+// regex, so the test cannot agree with the code by sharing its bug. It matches
+// only a line whose key is exactly "pid", at the dump's top level.
+func pidFromRealDump(dump string) (int, bool) {
+	for _, line := range strings.Split(dump, "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if !found || strings.TrimSpace(key) != "pid" {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), ";")))
+		if err == nil {
+			return pid, true
+		}
+	}
+	return 0, false
 }
