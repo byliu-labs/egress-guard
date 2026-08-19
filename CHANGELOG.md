@@ -57,6 +57,12 @@ versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pre-daemon-start without it returning silently.
 
 ### Fixed
+- **`drift-calibrate` quantiles no longer track position in the log.** Held-out
+  connections were scored against a last-seen timestamp frozen at the training
+  cut, so "time since the last connection to this host" grew with each
+  connection's offset in the file and dominated upper quantiles. Calibration
+  now advances last-seen as it replays, the way the daemon experiences the log;
+  the behavioural clouds remain unchanged.
 - **Menu bar no longer prompts for root on every relaunch.** `FirstRunNeeded`
   probed a LaunchAgent label the current system-daemon architecture never
   registers, so it always reported "not installed". It now stat-s the

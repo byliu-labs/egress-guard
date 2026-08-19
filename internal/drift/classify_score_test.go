@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
@@ -56,5 +57,43 @@ func TestScoreLiveAddsInFlightConcurrencyToTheScore(t *testing.T) {
 	// the dimension hard-wired to zero, since the other eight already differ.
 	if busy.Distance <= quiet.Distance {
 		t.Fatalf("concurrency did not reach the score: busy=%v quiet=%v", busy.Distance, quiet.Distance)
+	}
+}
+
+// ScoreLive must be exactly ScoreAgainst with the baseline's own last-seen.
+// If they ever diverge, the daemon and the calibrator are scoring in two
+// different spaces and the thresholds read off one do not apply to the other.
+func TestScoreLiveDelegatesToScoreAgainstWithStoredLastSeen(t *testing.T) {
+	entries := append(
+		flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow),
+		flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)...)
+	baseline := BuildBaseline(&catalog.Catalog{}, entries)
+	pair := catalog.Identity{ExeBasename: "git"}
+	joined := testJoined("2026-08-19T03:00:00Z", 4_000_000, 1, 9000, nil)
+
+	live := baseline.ScoreLive(pair, "github.com", joined, 3)
+	same := baseline.ScoreAgainst(pair, "github.com", joined, baseline.LastSeenFor(pair, "github.com"), 3)
+	if live.Distance != same.Distance || live.Scored != same.Scored {
+		t.Fatalf("ScoreLive = %+v, ScoreAgainst(storedLastSeen) = %+v; they must agree", live, same)
+	}
+}
+
+// The supplied prev must actually reach DimInterArrival. A replaying caller
+// advances it per connection; if ScoreAgainst ignored it in favour of the
+// baseline's frozen value, calibration would measure file position again.
+func TestScoreAgainstHonoursSuppliedPrev(t *testing.T) {
+	entries := append(
+		flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow),
+		flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)...)
+	baseline := BuildBaseline(&catalog.Catalog{}, entries)
+	pair := catalog.Identity{ExeBasename: "git"}
+	joined := testJoined("2026-08-19T03:00:00Z", 1, 100, 50, nil)
+
+	stale, _ := time.Parse(time.RFC3339, "2026-08-18T14:00:00Z")
+	recent, _ := time.Parse(time.RFC3339, "2026-08-19T02:59:00Z")
+	far := baseline.ScoreAgainst(pair, "github.com", joined, stale, 0)
+	near := baseline.ScoreAgainst(pair, "github.com", joined, recent, 0)
+	if far.Distance == near.Distance {
+		t.Fatalf("prev was ignored: stale and recent both scored %v", far.Distance)
 	}
 }

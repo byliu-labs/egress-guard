@@ -108,13 +108,54 @@ func TestScoresForEntries_ScoresConcurrencyInTheCloudsOwnSpace(t *testing.T) {
 	// with a hardcoded concurrency of 0 offsets EVERY connection from clouds
 	// that carry log1p(11), so even the closest lands tens of units out.
 	//
-	// The assertion is on the minimum rather than the median because a second,
-	// pre-existing defect inflates the rest: LastSeenFor freezes at the last
-	// training timestamp, so "time since the last connection" grows without
-	// bound across the held-out set and dominates every later score. That is
-	// not this property and is not fixed here.
+	// The assertion is on the minimum rather than the median because it isolates
+	// this property: the closest held-out connection is the one whose remaining
+	// eight coordinates match its history, so any residual distance is
+	// concurrency. The inter-arrival inflation that used to dominate the rest of
+	// the sample is fixed separately, by the walk-forward replay below.
 	if closest := scores[0]; closest > 0.5 {
 		t.Fatalf("closest distance = %.3f for a log where every connection matches its own history; "+
 			"the scoring side is not deriving concurrency the way BuildBaseline does", closest)
 	}
+}
+
+// Every connection in this log is identical to its own history. The held-out
+// distances should therefore stay roughly level; a climb with position means
+// calibration is measuring the train/test split rather than the connection's
+// behaviour, and any threshold read off these quantiles would be set by how
+// long the log is.
+func TestScoresForEntriesIsIndependentOfPositionInTheHeldOutSet(t *testing.T) {
+	base := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	var entries []decisionlog.Entry
+	id := 0
+	for slot := 0; slot < 40; slot++ {
+		stamp := base.Add(time.Duration(slot) * 30 * time.Second).Format(time.RFC3339)
+		for k := 0; k < 12; k++ {
+			conn := fmt.Sprintf("c%d", id)
+			entries = append(entries,
+				decisionlog.Entry{Kind: decisionlog.KindDecision, ConnID: conn, Timestamp: stamp,
+					Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", Host: "github.com"},
+				decisionlog.Entry{Kind: decisionlog.KindFlow, ConnID: conn, Timestamp: stamp,
+					BytesUp: 1000, BytesDown: 2000, DurationMS: 8000})
+			id++
+		}
+	}
+
+	scores, infinite, unscorable := scoresForEntries(entries, 0.7)
+	if len(scores) < 20 || infinite != 0 || unscorable != 0 {
+		t.Fatalf("sample = %d scored, %d infinite, %d unscorable", len(scores), infinite, unscorable)
+	}
+	sorted := sortedCopy(scores)
+	first, last := scores[0], scores[len(scores)-1]
+	t.Logf("walk-forward sample: first=%.3f last=%.3f p50=%.3f p99=%.3f max=%.3f",
+		first, last, quantile(sorted, 0.5), quantile(sorted, 0.99), sorted[len(sorted)-1])
+	if last > first+1.0 {
+		t.Fatalf("first held-out connection scored %.3f, last scored %.3f: distance grows with position", first, last)
+	}
+}
+
+func sortedCopy(values []float64) []float64 {
+	out := append([]float64(nil), values...)
+	sort.Float64s(out)
+	return out
 }

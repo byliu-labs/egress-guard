@@ -221,7 +221,15 @@ func (b *Baseline) classify(e decisionlog.Entry, concurrency int) Event {
 // ClientHello has no close-time flow metadata, so a known pair receives a
 // finite observational score without inventing byte counts.
 func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined, concurrency int) Score {
-	point, ok := PointFrom(joined, b.LastSeenFor(id, host), concurrency)
+	return b.ScoreAgainst(id, host, joined, b.LastSeenFor(id, host), concurrency)
+}
+
+// ScoreAgainst scores one completed connection using an explicitly supplied
+// previous-connection time. A replaying caller must advance that reference as
+// it walks its held-out history; using the baseline's frozen last-seen value
+// makes inter-arrival distance grow with file position.
+func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
+	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {
 		return Score{}
 	}

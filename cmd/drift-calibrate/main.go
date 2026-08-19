@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -66,10 +67,30 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 	index := decisionlog.BuildConcurrencyIndex(joined)
 	var scores []float64
 	infinite, unscorable := 0, 0
+	// Seed the replay's last-seen state from the training half, so the first
+	// held-out connection is measured against the connection that really
+	// preceded it rather than against nothing.
+	lastSeen := map[string]time.Time{}
+	for _, item := range joined[:cut] {
+		if at, err := time.Parse(time.RFC3339, item.Decision.Timestamp); err == nil {
+			lastSeen[pairKeyOf(item.Decision)] = at
+		}
+	}
 	for _, item := range joined[cut:] {
 		identity := drift.IdentityFromEntry(item.Decision)
-		score := baseline.ScoreLive(identity, item.Decision.Host, item,
-			concurrencyAt(index, item.Decision))
+		key := pairKeyOf(item.Decision)
+		at, err := time.Parse(time.RFC3339, item.Decision.Timestamp)
+		if err != nil {
+			unscorable++
+			continue
+		}
+		// Walk forward on both derived dimensions at once: inter-arrival against
+		// the previous connection for this pair as the replay has seen it so
+		// far, concurrency at this same instant. One parse serves both, so they
+		// cannot disagree about when this connection happened.
+		score := baseline.ScoreAgainst(identity, item.Decision.Host, item,
+			lastSeen[key], index.At(at, item.Decision.ConnID))
+		lastSeen[key] = at
 		if !score.Scored {
 			unscorable++
 			continue
@@ -83,15 +104,17 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 	return scores, infinite, unscorable
 }
 
-// concurrencyAt answers how much else was egressing when this connection
-// opened. An unparseable timestamp yields zero, matching BuildBaseline, which
-// drops such a record before it reaches a cloud.
-func concurrencyAt(index *decisionlog.ConcurrencyIndex, decision decisionlog.Entry) int {
-	at, err := time.Parse(time.RFC3339, decision.Timestamp)
-	if err != nil {
-		return 0
-	}
-	return index.At(at, decision.ConnID)
+// pairKeyOf follows drift's identity and host bucketing so the replay's
+// last-seen state advances for exactly the pair whose cloud is being scored.
+// It mirrors identityKey/hostKey/pairKey in internal/drift; those are
+// unexported, and a mismatch would silently bucket the replay differently
+// from the clouds it scores against.
+func pairKeyOf(decision decisionlog.Entry) string {
+	id := drift.IdentityFromEntry(decision)
+	return strings.Join([]string{
+		id.ExePath, id.ExeSHA256, id.TeamID, id.ExeBasename,
+		strings.ToLower(decision.Host),
+	}, "\x00")
 }
 
 func quantile(sorted []float64, q float64) float64 {
