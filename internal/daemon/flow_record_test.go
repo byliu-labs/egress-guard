@@ -119,6 +119,56 @@ func TestAllowedConnection_ScoresCompletedFlowWithCapturedConcurrency(t *testing
 	}
 }
 
+func TestCompletedFlow_SteadyPairDoesNotDriftWithinTheRefreshWindow(t *testing.T) {
+	scoreAt := func(offset time.Duration) float64 {
+		var got drift.Event
+		runAllowedConnectionWithDaemon(t, 512, func(d *Daemon) {
+			_, hash, err := d.hasher.Hash("/usr/bin/curl")
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline := drift.BuildBaseline(&catalog.Catalog{}, steadyPairHistory(hash, 60*time.Second, 40))
+			d.SetBaseline(baseline)
+			d.now = func() time.Time { return steadyPairEnd.Add(offset) }
+			d.onCompletedScore = func(ev drift.Event) { got = ev }
+		})
+		if !got.Score.Scored {
+			t.Fatalf("offset %s: not scored", offset)
+		}
+		return got.Score.Distance
+	}
+
+	early, late := scoreAt(time.Minute), scoreAt(59*time.Minute)
+	t.Logf("steady pair: +1min=%.3f +59min=%.3f", early, late)
+	if late > early+2.0 {
+		t.Fatalf("+1min scored %.3f, +59min scored %.3f: distance tracks the refresh window, not the traffic", early, late)
+	}
+}
+
+var steadyPairEnd = time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+
+func steadyPairHistory(hash string, cadence time.Duration, count int) []decisionlog.Entry {
+	start := steadyPairEnd.Add(-time.Duration(count-1) * cadence)
+	entries := make([]decisionlog.Entry, 0, count*2)
+	for i := 0; i < count; i++ {
+		ts := start.Add(time.Duration(i) * cadence).Format(time.RFC3339)
+		connID := "steady-" + strconv.Itoa(i)
+		entries = append(entries,
+			decisionlog.Entry{
+				Kind: decisionlog.KindDecision, ConnID: connID, Timestamp: ts,
+				Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl",
+				ExeSHA256: hash, TeamID: "TESTTEAM", SigValid: true,
+				Host: "allow.example",
+			},
+			decisionlog.Entry{
+				Kind: decisionlog.KindFlow, ConnID: connID, BytesUp: 512,
+				BytesDown: 128, DurationMS: 0,
+			},
+		)
+	}
+	return entries
+}
+
 func TestDeniedConnection_WritesNoFlowRecord(t *testing.T) {
 	logPath := runDeniedConnectionForTest(t)
 	entries, err := decisionlog.Read(logPath)

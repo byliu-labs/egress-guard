@@ -107,6 +107,7 @@ type Daemon struct {
 	listener net.Listener
 	ready    chan struct{}
 	dial     func(network, address string) (net.Conn, error)
+	now      func() time.Time
 	mu       sync.Mutex
 	hasher   *procid.ExeHasher
 	inflight *inflight
@@ -118,6 +119,13 @@ type Daemon struct {
 	// swap it while connection goroutines read it without a data race. A nil
 	// pointer is valid and degrades to generic novel-pairing classification.
 	baseline atomic.Pointer[drift.Baseline]
+}
+
+func (d *Daemon) nowTime() time.Time {
+	if d.now != nil {
+		return d.now()
+	}
+	return timeNow()
 }
 
 // New creates a daemon. Call Run to start.

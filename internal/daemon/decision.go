@@ -64,7 +64,7 @@ func (d *Daemon) entryForWithoutPersistenceNoHash(decision decisionlog.Decision,
 
 func (d *Daemon) entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier, includeHash bool) decisionlog.Entry {
 	entry := decisionlog.Entry{
-		Timestamp: timeNow().UTC().Format(time.RFC3339),
+		Timestamp: d.nowTime().UTC().Format(time.RFC3339),
 		Decision:  decision,
 		Action:    string(decision),
 		Reason:    reason,
@@ -108,7 +108,7 @@ func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int6
 		return
 	}
 	flow := decisionlog.Entry{
-		Timestamp:  timeNow().UTC().Format(time.RFC3339),
+		Timestamp:  d.nowTime().UTC().Format(time.RFC3339),
 		Kind:       decisionlog.KindFlow,
 		ConnID:     connID,
 		Decision:   entry.Decision,
@@ -123,7 +123,7 @@ func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int6
 		TeamID:     entry.TeamID,
 		BytesUp:    up,
 		BytesDown:  down,
-		DurationMS: timeNow().Sub(started).Milliseconds(),
+		DurationMS: d.nowTime().Sub(started).Milliseconds(),
 	}
 	// Only score when someone is observing. Nothing in production consumes a
 	// completed-flow score yet (internal/drift is observe-only), and scoring
@@ -398,7 +398,7 @@ func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.Si
 		Reason:    drift.ReasonNovelPairing,
 		Identity:  id,
 		Host:      host,
-		FirstSeen: timeNow(),
+		FirstSeen: d.nowTime(),
 		Log:       entry,
 	}
 }
@@ -475,7 +475,7 @@ func (d *Daemon) handle(conn net.Conn) {
 		entry.DestIP, entry.DestPort = dstIP.String(), dstPort
 		_ = d.opts.Log.Write(entry)
 		conn.SetReadDeadline(timeZero())
-		started := timeNow()
+		started := d.nowTime()
 		up, down := spliceBoth(conn, upstream)
 		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency)
 		return
@@ -550,7 +550,7 @@ func (d *Daemon) handle(conn net.Conn) {
 			return
 		}
 		_ = d.opts.Log.Write(entry)
-		started := timeNow()
+		started := d.nowTime()
 		up, down := spliceBoth(conn, upstream)
 		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency)
 	default: // outcomeDeny (outcomeExempt is handled by fast-path above)
