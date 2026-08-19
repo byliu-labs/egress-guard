@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-// Real launchctl output captured from a running install. Format is the
-// classic plist-style dump (not JSON) — the command predates launchctl's
-// `print` subcommand and still uses this format on every macOS we support.
+// Real `launchctl list` output captured from a running user LaunchAgent.
 const launchctlListRunning = `{
 	"LimitLoadToSessionType" = "Aqua";
 	"Label" = "com.byliu.egress-guard";
@@ -23,11 +21,23 @@ const launchctlListRunning = `{
 		"start";
 		"--port=8443";
 	);
-};`
+	};`
 
-// Same plist, between KeepAlive restarts: registered with launchd but not
-// currently running. The PID line is absent — that's how we distinguish
-// "ENABLED but daemon down" from "ENABLED and daemon up".
+const launchctlPrintRunning = `system/com.byliu.egress-guard.daemon = {
+	active count = 1
+	state = running
+	program = /usr/local/bin/egress-guard
+	pid = 893
+}`
+
+const launchctlPrintLoadedNotRunning = `system/com.byliu.egress-guard.daemon = {
+	active count = 0
+	state = waiting
+	program = /usr/local/bin/egress-guard
+}`
+
+// User LaunchAgent output between KeepAlive restarts: registered with launchd
+// but not currently running.
 const launchctlListLoadedNotRunning = `{
 	"LimitLoadToSessionType" = "Aqua";
 	"Label" = "com.byliu.egress-guard";
@@ -56,6 +66,26 @@ func TestParseAgentList_LoadedNotRunning(t *testing.T) {
 	}
 }
 
+func TestParseDaemonPrint_RunningExtractsPID(t *testing.T) {
+	state := parseDaemonPrint(launchctlPrintRunning)
+	if !state.Loaded {
+		t.Fatal("a successful system-domain print means the job is loaded")
+	}
+	if state.PID != 893 {
+		t.Errorf("PID = %d, want 893", state.PID)
+	}
+}
+
+func TestParseDaemonPrint_LoadedWithoutPID(t *testing.T) {
+	state := parseDaemonPrint("system/" + launchDaemonLabel + " = {\n\tstate = waiting\n}")
+	if !state.Loaded {
+		t.Fatal("a successful system-domain print means the job is loaded")
+	}
+	if state.PID != 0 {
+		t.Errorf("PID = %d, want 0", state.PID)
+	}
+}
+
 // stubLaunchctl swaps the launchctlList var for the duration of the test.
 func stubLaunchctl(t *testing.T, output string, found bool) {
 	t.Helper()
@@ -66,17 +96,14 @@ func stubLaunchctl(t *testing.T, output string, found bool) {
 
 func stubLaunchctlDaemon(t *testing.T, output string, found bool) {
 	t.Helper()
-	prev := launchctlListDaemon
-	t.Cleanup(func() { launchctlListDaemon = prev })
-	launchctlListDaemon = func() (string, bool) { return output, found }
+	prev := launchctlPrintDaemon
+	t.Cleanup(func() { launchctlPrintDaemon = prev })
+	launchctlPrintDaemon = func() (string, bool) { return output, found }
 }
 
 func TestPrintPlatformStatus_NotEnabled(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, "", false)
-	// Without this, Probe() stats the real /Library plist: these pass on a
-	// machine where it exists and would behave differently in CI.
-	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -96,9 +123,6 @@ func TestPrintPlatformStatus_NotEnabled(t *testing.T) {
 func TestPrintPlatformStatus_FullyRunning(t *testing.T) {
 	stubLaunchctl(t, launchctlListRunning, true)
 	stubLaunchctlDaemon(t, "", false)
-	// Without this, Probe() stats the real /Library plist: these pass on a
-	// machine where it exists and would behave differently in CI.
-	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -115,9 +139,6 @@ func TestPrintPlatformStatus_FullyRunning(t *testing.T) {
 func TestPrintPlatformStatus_LoadedButDaemonDown(t *testing.T) {
 	stubLaunchctl(t, launchctlListLoadedNotRunning, true)
 	stubLaunchctlDaemon(t, "", false)
-	// Without this, Probe() stats the real /Library plist: these pass on a
-	// machine where it exists and would behave differently in CI.
-	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -137,7 +158,6 @@ func TestPrintPlatformStatus_LoadedButDaemonDown(t *testing.T) {
 func TestPrintPlatformStatus_LaunchDaemonNotEnabled(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, "", false)
-	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -153,8 +173,9 @@ func TestPrintPlatformStatus_LaunchDaemonNotEnabled(t *testing.T) {
 
 func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, launchctlListRunning, true)
-	stubBootDaemonInstalled(t, true)
+	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
+	// A bootstrapped job is authoritative even if its plist is no longer on
+	// disk. Status must key ENABLED on launchd's live system-domain state.
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -163,44 +184,14 @@ func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	if !strings.Contains(out, "LaunchDaemon (boot-resident): ENABLED") {
 		t.Errorf("expected LaunchDaemon ENABLED line; got:\n%s", out)
 	}
-	if !strings.Contains(out, "boot-daemon: running (pid 12345)") {
+	if !strings.Contains(out, "boot-daemon: running (pid 893)") {
 		t.Errorf("expected boot-daemon pid line; got:\n%s", out)
 	}
 }
 
-// The plist exists, so the daemon is installed, but an unprivileged
-// launchctl query cannot see a system-domain job. Status must not turn that
-// missing observation into either "not installed" or "not running".
-func TestPrintPlatformStatus_InstalledButUnprivilegedIsUnknown(t *testing.T) {
+func TestPrintPlatformStatus_LoadedWithoutPIDIsNotRunning(t *testing.T) {
 	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, "", false)
-	prev := launchDaemonInstalled
-	t.Cleanup(func() { launchDaemonInstalled = prev })
-	launchDaemonInstalled = func() bool { return true }
-
-	var buf bytes.Buffer
-	if err := printPlatformStatus(&buf); err != nil {
-		t.Fatalf("printPlatformStatus: %v", err)
-	}
-	out := buf.String()
-	if strings.Contains(out, "LaunchDaemon (boot-resident): NOT enabled") {
-		t.Errorf("status = %q; the plist is present, so it is installed", out)
-	}
-	if strings.Contains(out, "boot-daemon: not running") {
-		t.Errorf("status = %q; an unprivileged query cannot conclude not running", out)
-	}
-	if !strings.Contains(out, "sudo egress-guard status") {
-		t.Errorf("status = %q; it must say how to get the real answer", out)
-	}
-	if strings.Contains(out, "sudo egress-guard install") {
-		t.Errorf("status = %q; re-running install would be a no-op", out)
-	}
-}
-
-func TestPrintPlatformStatus_InstalledAndQueryableWithoutPIDIsNotRunning(t *testing.T) {
-	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, launchctlListLoadedNotRunning, true)
-	stubBootDaemonInstalled(t, true)
+	stubLaunchctlDaemon(t, launchctlPrintLoadedNotRunning, true)
 
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
@@ -341,56 +332,6 @@ func TestPrintPlatformStatus_NoTUNWarningWhenOffline(t *testing.T) {
 	}
 }
 
-// The state the maintainer hit on 2026-08-19: `sudo egress-guard install` wrote
-// the plist, then `launchctl bootstrap` failed with exit 5. The plist is on
-// disk and the job is not bootstrapped. Run as root, `launchctl list` still
-// fails — but for root that failure is an OBSERVATION ("not bootstrapped"),
-// not a missing permission. Telling a root user to re-run `sudo egress-guard
-// status` is the no-op prescription the plan forbids, and it buries the one
-// remedy that works.
-func TestPrintPlatformStatus_RootWithUnbootstrappedPlistNamesTheRealRemedy(t *testing.T) {
-	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, "", false)
-	stubBootDaemonInstalled(t, true)
-	stubEuid(t, 0)
-
-	var buf bytes.Buffer
-	if err := printPlatformStatus(&buf); err != nil {
-		t.Fatalf("printPlatformStatus: %v", err)
-	}
-	out := buf.String()
-	if strings.Contains(out, "sudo egress-guard status") {
-		t.Errorf("status = %q; already root — that command is a no-op here", out)
-	}
-	if strings.Contains(out, "unknown") {
-		t.Errorf("status = %q; root can query the system domain, so this is an observation", out)
-	}
-	if !strings.Contains(out, "not bootstrapped") {
-		t.Errorf("status = %q; want the plist-present-but-not-loaded observation", out)
-	}
-}
-
-// Unprivileged, the same failed query is genuinely un-observable and must stay
-// "unknown" — the distinction this whole change exists to draw.
-func TestPrintPlatformStatus_UnprivilegedUnqueryableStaysUnknown(t *testing.T) {
-	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, "", false)
-	stubBootDaemonInstalled(t, true)
-	stubEuid(t, 501)
-
-	var buf bytes.Buffer
-	if err := printPlatformStatus(&buf); err != nil {
-		t.Fatalf("printPlatformStatus: %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "unknown (system-domain query needs root") {
-		t.Errorf("status = %q; a non-root query cannot conclude anything", out)
-	}
-	if strings.Contains(out, "not bootstrapped") {
-		t.Errorf("status = %q; unprivileged, we cannot know that", out)
-	}
-}
-
 // hasLine matches a whole output line. `strings.Contains(out, "daemon: not
 // running")` is satisfied by the "boot-daemon: not running" line, so a
 // substring check on any of these strings cannot fail for the reason it claims.
@@ -403,16 +344,11 @@ func hasLine(out, want string) bool {
 	return false
 }
 
-// `install` writes the plist BEFORE `launchctl bootstrap` and returns the
-// bootstrap error without removing it, so a plist on disk is exactly what a
-// FAILED install leaves behind. Rendering that as "ENABLED" tells a user whose
-// install just errored that they are protected. On a security product that is
-// the worst possible direction to be wrong in.
+// A plist without a successful system-domain print is not proof that the job
+// is loaded. This is the failed-bootstrap state.
 func TestPrintPlatformStatus_PlistWithoutALoadedJobIsNotEnabled(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, "", false)
-	stubBootDaemonInstalled(t, true)
-	stubEuid(t, 501)
 
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
@@ -422,17 +358,15 @@ func TestPrintPlatformStatus_PlistWithoutALoadedJobIsNotEnabled(t *testing.T) {
 	if hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
 		t.Errorf("status = %q; no job answered, so a file on disk is not proof of protection", out)
 	}
-	if !strings.Contains(out, "LaunchDaemon (boot-resident): INSTALLED") {
-		t.Errorf("status = %q; the plist IS present and that should be reported", out)
+	if !hasLine(out, "LaunchDaemon (boot-resident): NOT enabled (run `sudo egress-guard install`)") {
+		t.Errorf("status = %q; no live system-domain job was confirmed", out)
 	}
 }
 
 // A job that actually answered is the only thing that earns the word ENABLED.
 func TestPrintPlatformStatus_QueryableJobEarnsEnabled(t *testing.T) {
 	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, launchctlListRunning, true)
-	stubBootDaemonInstalled(t, true)
-	stubEuid(t, 0)
+	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
 
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
@@ -440,5 +374,29 @@ func TestPrintPlatformStatus_QueryableJobEarnsEnabled(t *testing.T) {
 	}
 	if out := buf.String(); !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
 		t.Errorf("status = %q, want ENABLED for a job launchd confirmed", out)
+	}
+}
+
+// `launchctl list <label>` asks the user domain and fails for a system job even
+// when the system job is running. Status must use the explicit system-domain
+// print query, which is available to an unprivileged user.
+func TestPrintPlatformStatus_UsesSystemDomainPrintWithoutRoot(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
+	stubEuid(t, 501)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
+		t.Errorf("status = %q; a running system-domain job is enabled", out)
+	}
+	if !hasLine(out, "boot-daemon: running (pid 893)") {
+		t.Errorf("status = %q; system-domain print should provide the PID", out)
+	}
+	if strings.Contains(out, "unknown") {
+		t.Errorf("status = %q; explicit system-domain print answered without root", out)
 	}
 }

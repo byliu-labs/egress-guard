@@ -6,18 +6,18 @@ import "testing"
 
 func TestProbe_RunningDaemonNoTUN(t *testing.T) {
 	orig := launchctlList
-	origDaemon := launchctlListDaemon
+	origDaemon := launchctlPrintDaemon
 	origRoute := routeGetDefault
 	t.Cleanup(func() {
 		launchctlList = orig
-		launchctlListDaemon = origDaemon
+		launchctlPrintDaemon = origDaemon
 		routeGetDefault = origRoute
 	})
 
 	launchctlList = func() (string, bool) {
 		return "{\n\t\"PID\" = 12345;\n\t\"Label\" = \"com.byliu.egress-guard\";\n};", true
 	}
-	launchctlListDaemon = func() (string, bool) { return "", false }
+	launchctlPrintDaemon = func() (string, bool) { return "", false }
 	routeGetDefault = func() (string, bool) { return "   interface: en0\n", true }
 
 	got := Probe()
@@ -35,15 +35,15 @@ func TestProbe_RunningDaemonNoTUN(t *testing.T) {
 func TestProbe_TUNBypass(t *testing.T) {
 	origRoute := routeGetDefault
 	origList := launchctlList
-	origDaemon := launchctlListDaemon
+	origDaemon := launchctlPrintDaemon
 	t.Cleanup(func() {
 		routeGetDefault = origRoute
 		launchctlList = origList
-		launchctlListDaemon = origDaemon
+		launchctlPrintDaemon = origDaemon
 	})
 
 	launchctlList = func() (string, bool) { return "", false }
-	launchctlListDaemon = func() (string, bool) { return "", false }
+	launchctlPrintDaemon = func() (string, bool) { return "", false }
 	routeGetDefault = func() (string, bool) { return "   interface: utun4\n", true }
 
 	got := Probe()

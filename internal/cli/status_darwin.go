@@ -11,10 +11,10 @@ import (
 	"strings"
 )
 
-// agentState captures what `launchctl list <label>` tells us about the
-// daemon's launchd registration. Loaded means the plist is bootstrapped
-// into a launchd domain; PID is 0 when loaded but not currently running
-// (e.g., between KeepAlive restarts), or when not loaded at all.
+// agentState captures launchd registration. The user LaunchAgent is read with
+// `launchctl list`; the system LaunchDaemon is read with
+// `launchctl print system/<label>`. Loaded means the job answered in its
+// domain; PID is 0 when loaded but not currently running.
 type agentState struct {
 	Loaded bool
 	PID    int
@@ -32,8 +32,11 @@ var launchctlList = func() (output string, found bool) {
 	return string(out), true
 }
 
-var launchctlListDaemon = func() (output string, found bool) {
-	out, err := exec.Command("launchctl", "list", launchDaemonLabel).CombinedOutput()
+var launchctlPrintDaemon = func() (output string, found bool) {
+	// `launchctl print system/...` addresses the system domain directly and is
+	// readable by the unprivileged status command. `launchctl list <label>`
+	// would query the caller's user domain instead.
+	out, err := exec.Command("launchctl", "print", "system/"+launchDaemonLabel).CombinedOutput()
 	if err != nil {
 		return "", false
 	}
@@ -45,6 +48,7 @@ var launchctlListDaemon = func() (output string, found bool) {
 // running, which is how we distinguish "ENABLED but daemon down" from
 // "ENABLED and daemon up".
 var pidLineRe = regexp.MustCompile(`"PID"\s*=\s*(\d+)`)
+var daemonPIDLineRe = regexp.MustCompile(`(?m)^\s*(?:pid|"PID")\s*=\s*(\d+)\s*;?\s*$`)
 
 func parseAgentList(s string) agentState {
 	state := agentState{Loaded: true}
@@ -64,12 +68,22 @@ func checkAgent() agentState {
 	return parseAgentList(out)
 }
 
+func parseDaemonPrint(s string) agentState {
+	state := agentState{Loaded: true}
+	if m := daemonPIDLineRe.FindStringSubmatch(s); m != nil {
+		if pid, err := strconv.Atoi(m[1]); err == nil {
+			state.PID = pid
+		}
+	}
+	return state
+}
+
 func checkDaemonJob() agentState {
-	out, found := launchctlListDaemon()
+	out, found := launchctlPrintDaemon()
 	if !found {
 		return agentState{}
 	}
-	return parseAgentList(out)
+	return parseDaemonPrint(out)
 }
 
 // routeGetDefault shells out to `route get default` and returns its stdout.
@@ -148,30 +162,16 @@ func printPlatformStatus(w io.Writer) error {
 		fmt.Fprintln(w, "daemon: not running")
 	}
 
-	switch {
-	case r.BootDaemonInstalled && r.BootDaemonQueryable:
+	if r.BootDaemonLoaded {
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): ENABLED")
-	case r.BootDaemonInstalled:
-		// `install` writes the plist before `launchctl bootstrap` and leaves it
-		// there when bootstrap fails, so a file on disk is not proof of
-		// protection — only a job that answered is. Report what we actually
-		// observed and let the boot-daemon line below carry the detail.
-		fmt.Fprintln(w, "LaunchDaemon (boot-resident): INSTALLED (plist present, not confirmed loaded)")
-	default:
+	} else {
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): NOT enabled (run `sudo egress-guard install`)")
 	}
 	switch {
 	case r.BootDaemonPID > 0:
 		fmt.Fprintf(w, "boot-daemon: running (pid %d)\n", r.BootDaemonPID)
-	case r.BootDaemonQueryable:
+	case r.BootDaemonLoaded:
 		fmt.Fprintln(w, "boot-daemon: not running (KeepAlive should restart it shortly)")
-	case r.BootDaemonInstalled && r.Privileged:
-		// Root can reach the system domain, so a failed query is not a blind
-		// spot — the plist is there and nothing bootstrapped it. `install` is
-		// the remedy that re-attempts the bootstrap; do not bury it.
-		fmt.Fprintln(w, "boot-daemon: installed but not bootstrapped (run `sudo egress-guard install` to load it)")
-	case r.BootDaemonInstalled:
-		fmt.Fprintln(w, "boot-daemon: unknown (system-domain query needs root — try `sudo egress-guard status`)")
 	default:
 		fmt.Fprintln(w, "boot-daemon: not running")
 	}

@@ -50,11 +50,10 @@ const launchDaemonTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// BootDaemonInstalled reports whether the boot-resident system daemon is
-// installed, by stat-ing its LaunchDaemon plist. Unlike `launchctl list
-// <label>`, which needs root to query a system-domain job, stat-ing the plist
-// works from the unprivileged menu bar — so it is the reliable "is protection
-// installed?" signal for gating first-run escalation.
+// BootDaemonInstalled reports whether the boot-resident system daemon's plist
+// exists. It remains useful for install/catalog gating, but it is not live
+// status: the plist can outlive a failed bootstrap, and a bootstrapped job can
+// outlive a removed plist. Status queries `launchctl print system/<label>`.
 func BootDaemonInstalled() bool {
 	return launchDaemonInstalled()
 }
