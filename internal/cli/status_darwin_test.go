@@ -381,3 +381,55 @@ func TestPrintPlatformStatus_UnprivilegedUnqueryableStaysUnknown(t *testing.T) {
 		t.Errorf("status = %q; unprivileged, we cannot know that", out)
 	}
 }
+
+// hasLine matches a whole output line. `strings.Contains(out, "daemon: not
+// running")` is satisfied by the "boot-daemon: not running" line, so a
+// substring check on any of these strings cannot fail for the reason it claims.
+func hasLine(out, want string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
+// `install` writes the plist BEFORE `launchctl bootstrap` and returns the
+// bootstrap error without removing it, so a plist on disk is exactly what a
+// FAILED install leaves behind. Rendering that as "ENABLED" tells a user whose
+// install just errored that they are protected. On a security product that is
+// the worst possible direction to be wrong in.
+func TestPrintPlatformStatus_PlistWithoutALoadedJobIsNotEnabled(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, "", false)
+	stubBootDaemonInstalled(t, true)
+	stubEuid(t, 501)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
+		t.Errorf("status = %q; no job answered, so a file on disk is not proof of protection", out)
+	}
+	if !strings.Contains(out, "LaunchDaemon (boot-resident): INSTALLED") {
+		t.Errorf("status = %q; the plist IS present and that should be reported", out)
+	}
+}
+
+// A job that actually answered is the only thing that earns the word ENABLED.
+func TestPrintPlatformStatus_QueryableJobEarnsEnabled(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, launchctlListRunning, true)
+	stubBootDaemonInstalled(t, true)
+	stubEuid(t, 0)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	if out := buf.String(); !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
+		t.Errorf("status = %q, want ENABLED for a job launchd confirmed", out)
+	}
+}
