@@ -65,8 +65,14 @@ type Event struct {
 
 const minStableDays = 2
 
-// 5: clouds gained Pair metadata for inspection tooling. Version-4 snapshots
-// lack that one-way key metadata and must be rebuilt from the decision log.
+// 5: Point gained DimConcurrency (a 9th coordinate) and clouds gained Pair
+// metadata. The version guard is load-bearing for the first of those, not the
+// second: encoding/json decodes an 8-element array into a [9]float64 WITHOUT
+// error, zero-filling the missing coordinate. An older snapshot would
+// therefore load silently, with every historical point claiming nothing else
+// was egressing while live points carry real values — the two would be scored
+// against each other in different geometries. Older snapshots rebuild from the
+// decision log instead.
 const baselineSchemaVersion = 5
 
 const (
@@ -321,14 +327,12 @@ func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("drift: parse baseline: %w", err)
 	}
-	if snap.SchemaVersion == 2 {
+	// A snapshot from any other point space is absent, not broken: the caller
+	// rebuilds it from the log. Reporting it as an unreadable cache would log a
+	// fault on every upgrade that bumps the schema, which is every upgrade that
+	// adds a dimension.
+	if snap.SchemaVersion != baselineSchemaVersion || snap.CloudMeta == nil {
 		return nil, os.ErrNotExist
-	}
-	if snap.SchemaVersion != baselineSchemaVersion {
-		return nil, fmt.Errorf("drift: baseline schema version %d unsupported (want %d)", snap.SchemaVersion, baselineSchemaVersion)
-	}
-	if snap.CloudMeta == nil {
-		return nil, fmt.Errorf("drift: baseline missing cloud pair metadata")
 	}
 	builtThrough, _ := time.Parse(time.RFC3339, snap.BuiltThrough)
 	cloud := newClouds()

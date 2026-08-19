@@ -384,3 +384,29 @@ type writeFailConn struct {
 func (c writeFailConn) Write([]byte) (int, error) {
 	return 0, errors.New("forced replay write failure")
 }
+
+// The daemon must register its own connection in the in-flight set. That
+// registration is what lets every OTHER concurrent connection see this one as
+// ambient load, and nothing else observes it — the concurrency assertions
+// elsewhere inject their ambient entries by hand, so without this test
+// `d.inflight.open(connID)` can be deleted and the whole suite stays green.
+func TestAllowedConnection_RegistersItselfAsInFlight(t *testing.T) {
+	observed := make(chan int, 1)
+	runAllowedConnectionWithDaemon(t, 64, func(d *Daemon) {
+		d.onCompletedScore = func(drift.Event) {
+			// Still inside handle(), before the deferred done(): the count of
+			// everything open is exactly this connection.
+			observed <- d.inflight.count("")
+		}
+	})
+	select {
+	case n := <-observed:
+		if n != 1 {
+			t.Fatalf("connections in flight during handling = %d, want 1: "+
+				"the daemon is not registering its own connection, so concurrent "+
+				"connections cannot see it as ambient load", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("daemon never reached the completed-flow observer")
+	}
+}

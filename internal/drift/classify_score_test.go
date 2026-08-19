@@ -44,8 +44,17 @@ func TestScoreLiveAttributesAndExplainIsHonest(t *testing.T) {
 func TestScoreLiveAddsInFlightConcurrencyToTheScore(t *testing.T) {
 	entries := append(flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow), flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)...)
 	baseline := BuildBaseline(&catalog.Catalog{}, entries)
-	score := baseline.ScoreLive(catalog.Identity{ExeBasename: "git"}, "github.com", testJoined("2026-08-19T14:00:00Z", 1, 100, 50, nil), 9)
-	if !score.Scored || score.Distance == 0 {
-		t.Fatalf("live concurrency was not scored: %+v", score)
+	joined := testJoined("2026-08-19T14:00:00Z", 1, 100, 50, nil)
+	pair := catalog.Identity{ExeBasename: "git"}
+	busy := baseline.ScoreLive(pair, "github.com", joined, 9)
+	quiet := baseline.ScoreLive(pair, "github.com", joined, 0)
+	if !busy.Scored || !quiet.Scored {
+		t.Fatalf("scores = %+v / %+v, want both scored", busy, quiet)
+	}
+	// Compared against the same connection scored as if nothing else was
+	// egressing. Asserting only that the distance is non-zero would pass with
+	// the dimension hard-wired to zero, since the other eight already differ.
+	if busy.Distance <= quiet.Distance {
+		t.Fatalf("concurrency did not reach the score: busy=%v quiet=%v", busy.Distance, quiet.Distance)
 	}
 }

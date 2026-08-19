@@ -1,6 +1,8 @@
 package drift
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,5 +42,23 @@ func TestLoadBaseline_PreviousCloudMetadataDoesNotLoad(t *testing.T) {
 	b, err := LoadBaseline(p, &catalog.Catalog{})
 	if err == nil && b != nil {
 		t.Fatal("a version-4 snapshot lacks cloud pair metadata and must not load")
+	}
+}
+
+// A stale snapshot is a cache miss, not a fault. The daemon's startup path
+// logs any non-ErrNotExist failure as an unreadable cache, so reporting a
+// routine schema migration as an error would put a fault line in the log of
+// every machine that upgrades — for the one event the bump is designed to cause.
+func TestLoadBaseline_StaleSchemaIsAbsentNotBroken(t *testing.T) {
+	for _, version := range []int{2, 3, 4} {
+		p := filepath.Join(t.TempDir(), "baseline.json")
+		old := fmt.Sprintf(`{"schema_version":%d,"built_through":"2026-08-01T00:00:00Z",`+
+			`"identities":["a"],"hosts":["b"],"pairs":["a b"]}`, version)
+		if err := os.WriteFile(p, []byte(old), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadBaseline(p, &catalog.Catalog{}); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("LoadBaseline(v%d) err = %v, want os.ErrNotExist so the daemon rebuilds quietly", version, err)
+		}
 	}
 }

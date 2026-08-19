@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
@@ -58,11 +59,17 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 		}
 	}
 	baseline := drift.BuildBaseline(&catalog.Catalog{}, training)
+	// The clouds carry a concurrency derived from the log, so the connections
+	// scored against them must carry one too. Passing zero here would score
+	// every connection that had company as if it had none, offsetting the whole
+	// sample from the geometry the daemon will actually use.
+	index := decisionlog.BuildConcurrencyIndex(joined)
 	var scores []float64
 	infinite, unscorable := 0, 0
 	for _, item := range joined[cut:] {
 		identity := drift.IdentityFromEntry(item.Decision)
-		score := baseline.ScoreLive(identity, item.Decision.Host, item, 0)
+		score := baseline.ScoreLive(identity, item.Decision.Host, item,
+			concurrencyAt(index, item.Decision))
 		if !score.Scored {
 			unscorable++
 			continue
@@ -74,6 +81,17 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 		scores = append(scores, score.Distance)
 	}
 	return scores, infinite, unscorable
+}
+
+// concurrencyAt answers how much else was egressing when this connection
+// opened. An unparseable timestamp yields zero, matching BuildBaseline, which
+// drops such a record before it reaches a cloud.
+func concurrencyAt(index *decisionlog.ConcurrencyIndex, decision decisionlog.Entry) int {
+	at, err := time.Parse(time.RFC3339, decision.Timestamp)
+	if err != nil {
+		return 0
+	}
+	return index.At(at, decision.ConnID)
 }
 
 func quantile(sorted []float64, q float64) float64 {

@@ -29,7 +29,12 @@ type report struct {
 
 func inspect(logPath string) (report, error) {
 	var rep report
-	entries, err := decisionlog.Read(logPath)
+	// ReadHistory, not Read: the daemon rebuilds its baseline across rotated
+	// segments as well as the live file, and this tool exists to verify that
+	// rebuild. Reading only the live file would compare against a baseline the
+	// daemon does not have, and would report zero concurrency for a machine
+	// whose overlapping traffic has already rotated out.
+	entries, err := decisionlog.ReadHistory(logPath)
 	if err != nil {
 		return rep, fmt.Errorf("read %s: %w", logPath, err)
 	}

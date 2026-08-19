@@ -125,9 +125,12 @@ func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int6
 		BytesDown:  down,
 		DurationMS: timeNow().Sub(started).Milliseconds(),
 	}
-	event := d.classifyCompletedFlow(entry, flow, concurrency)
+	// Only score when someone is observing. Nothing in production consumes a
+	// completed-flow score yet (internal/drift is observe-only), and scoring
+	// runs a kNN over the pair's whole cloud — ~140us per connection that
+	// would otherwise be spent producing a value no caller can read.
 	if d.onCompletedScore != nil {
-		d.onCompletedScore(event)
+		d.onCompletedScore(d.classifyCompletedFlow(entry, flow, concurrency))
 	}
 	_ = d.opts.Log.Write(flow)
 }

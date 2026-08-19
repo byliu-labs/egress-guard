@@ -74,3 +74,47 @@ func TestSelectedLogPathPreservesExplicitOverride(t *testing.T) {
 		t.Errorf("selectedLogPath() = %q, want explicit override", got)
 	}
 }
+
+// The daemon rebuilds its baseline from decisionlog.ReadHistory, which spans
+// rotated segments as well as the live file. This tool exists to verify that
+// rebuild, so it must read the same history — reading only the live file makes
+// it report a smaller, different baseline than the one the daemon actually
+// holds, and on a rotated log it prints "no historical point carries
+// concurrency" for a machine whose clouds do carry it.
+func TestInspect_ReadsRotatedSegmentsLikeTheDaemon(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "blocked.log")
+
+	// Yesterday's traffic, already rotated out: two overlapping connections.
+	rotated := strings.Join([]string{
+		`{"ts":"2026-01-01T09:00:00Z","decision":"allow","kind":"decision","conn_id":"s1","exe":"/usr/bin/git","comm":"git","host":"github.com"}`,
+		`{"ts":"2026-01-01T09:00:00Z","decision":"allow","kind":"decision","conn_id":"s2","exe":"/usr/bin/git","comm":"git","host":"github.com"}`,
+		`{"ts":"2026-01-01T09:00:30Z","kind":"flow","conn_id":"s1","bytes_up":100,"bytes_down":200,"duration_ms":30000}`,
+		`{"ts":"2026-01-01T09:00:30Z","kind":"flow","conn_id":"s2","bytes_up":100,"bytes_down":200,"duration_ms":30000}`,
+	}, "\n") + "\n"
+	// Today's traffic, in the live file: one connection, overlapping nothing.
+	current := strings.Join([]string{
+		`{"ts":"2026-01-02T09:00:00Z","decision":"allow","kind":"decision","conn_id":"c1","exe":"/usr/bin/git","comm":"git","host":"github.com"}`,
+		`{"ts":"2026-01-02T09:00:30Z","kind":"flow","conn_id":"c1","bytes_up":100,"bytes_down":200,"duration_ms":30000}`,
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(live+".20260101T090000Z", []byte(rotated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live, []byte(current), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := inspect(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Connections != 3 {
+		t.Errorf("connections = %d, want 3: the rotated segment is history the daemon folds in", rep.Connections)
+	}
+	// The two overlapping connections live entirely in the rotated segment, so
+	// a live-file-only read reports zero here and warns the derivation is broken.
+	if rep.PointsWithConcurrency != 2 {
+		t.Fatalf("points with concurrency = %d, want 2 from the rotated segment", rep.PointsWithConcurrency)
+	}
+}
