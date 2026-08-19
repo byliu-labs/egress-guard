@@ -15,9 +15,10 @@ func TestGlyph(t *testing.T) {
 		r         cli.StatusReport
 		wantTitle string
 	}{
-		{"protected", cli.StatusReport{AgentLoaded: true, DaemonPID: 42}, "🛡️"},
+		{"protected", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 42}, "🛡️"},
 		{"tun-bypass-wins", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, TUNIface: "utun4"}, "⚠️"},
-		{"daemon-restarting", cli.StatusReport{AgentLoaded: true, DaemonPID: 0}, "⚠️"},
+		{"daemon-restarting", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 0}, "⚠️"},
+		{"retired-user-agent-is-not-protected", cli.StatusReport{AgentLoaded: true, DaemonPID: 42}, "⛔"},
 		{"not-protected", cli.StatusReport{}, "⛔"},
 	}
 	for _, c := range cases {
@@ -34,7 +35,7 @@ func TestGlyph(t *testing.T) {
 }
 
 func TestGlyph_ShowsPendingCount(t *testing.T) {
-	title, tip := Glyph(cli.StatusReport{AgentLoaded: true, DaemonPID: 42, PendingReviews: 3})
+	title, tip := Glyph(cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 42, PendingReviews: 3})
 	if !strings.Contains(title, "3") {
 		t.Errorf("title = %q, want the pending count in it", title)
 	}
@@ -44,7 +45,7 @@ func TestGlyph_ShowsPendingCount(t *testing.T) {
 }
 
 func TestGlyph_BypassWarningOutranksPendingCount(t *testing.T) {
-	title, tip := Glyph(cli.StatusReport{TUNIface: "utun4", AgentLoaded: true, DaemonPID: 42, PendingReviews: 3})
+	title, tip := Glyph(cli.StatusReport{TUNIface: "utun4", BootDaemonLoaded: true, BootDaemonPID: 42, PendingReviews: 3})
 	if title != "⚠️" {
 		t.Errorf("title = %q, want the bypass warning to win", title)
 	}
@@ -54,7 +55,7 @@ func TestGlyph_BypassWarningOutranksPendingCount(t *testing.T) {
 }
 
 func TestGlyph_NoBadgeWhenQueueEmpty(t *testing.T) {
-	title, _ := Glyph(cli.StatusReport{AgentLoaded: true, DaemonPID: 42})
+	title, _ := Glyph(cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 42})
 	if title != "🛡️" {
 		t.Errorf("title = %q, want the plain protected glyph", title)
 	}
