@@ -12,9 +12,13 @@ type StatusReport struct {
 	DaemonPID           int
 	BootDaemonInstalled bool
 	BootDaemonQueryable bool
-	BootDaemonPID       int
-	TUNIface            string
-	PendingReviews      int
+	// Privileged records who asked. A failed system-domain query means two
+	// different things: unprivileged it means "I cannot see", as root it means
+	// "the job is not bootstrapped" — an observation, with a real remedy.
+	Privileged     bool
+	BootDaemonPID  int
+	TUNIface       string
+	PendingReviews int
 }
 
 // Probe gathers launchd + default-route state. It shells out only to
@@ -37,6 +41,7 @@ func Probe() StatusReport {
 		DaemonPID:           agent.PID,
 		BootDaemonInstalled: BootDaemonInstalled(),
 		BootDaemonQueryable: boot.Loaded,
+		Privileged:          getEuid() == 0,
 		BootDaemonPID:       boot.PID,
 		TUNIface:            iface,
 		PendingReviews:      pendingReviews,

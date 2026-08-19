@@ -156,10 +156,15 @@ func printPlatformStatus(w io.Writer) error {
 	switch {
 	case r.BootDaemonPID > 0:
 		fmt.Fprintf(w, "boot-daemon: running (pid %d)\n", r.BootDaemonPID)
-	case !r.BootDaemonQueryable && r.BootDaemonInstalled:
-		fmt.Fprintln(w, "boot-daemon: unknown (system-domain query needs root — try `sudo egress-guard status`)")
 	case r.BootDaemonQueryable:
 		fmt.Fprintln(w, "boot-daemon: not running (KeepAlive should restart it shortly)")
+	case r.BootDaemonInstalled && r.Privileged:
+		// Root can reach the system domain, so a failed query is not a blind
+		// spot — the plist is there and nothing bootstrapped it. `install` is
+		// the remedy that re-attempts the bootstrap; do not bury it.
+		fmt.Fprintln(w, "boot-daemon: installed but not bootstrapped (run `sudo egress-guard install` to load it)")
+	case r.BootDaemonInstalled:
+		fmt.Fprintln(w, "boot-daemon: unknown (system-domain query needs root — try `sudo egress-guard status`)")
 	default:
 		fmt.Fprintln(w, "boot-daemon: not running")
 	}
