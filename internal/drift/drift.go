@@ -65,7 +65,15 @@ type Event struct {
 
 const minStableDays = 2
 
-const baselineSchemaVersion = 3
+// 5: Point gained DimConcurrency (a 9th coordinate) and clouds gained Pair
+// metadata. The version guard is load-bearing for the first of those, not the
+// second: encoding/json decodes an 8-element array into a [9]float64 WITHOUT
+// error, zero-filling the missing coordinate. An older snapshot would
+// therefore load silently, with every historical point claiming nothing else
+// was egressing while live points carry real values — the two would be scored
+// against each other in different geometries. Older snapshots rebuild from the
+// decision log instead.
+const baselineSchemaVersion = 5
 
 const (
 	rankNeverHit         = 4
@@ -88,6 +96,7 @@ type baselineSnapshot struct {
 	Pairs         []string           `json:"pairs"`
 	CloudPoints   map[string][]Point `json:"cloud_points,omitempty"`
 	CloudLast     map[string]string  `json:"cloud_last,omitempty"`
+	CloudMeta     map[string]Pair    `json:"cloud_meta"`
 }
 
 // BuildBaseline folds decision-log history into stable normal traffic. Only
@@ -131,13 +140,15 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		b.pairs[pair] = true
 	}
 	b.builtThrough = latest
+	joined := decisionlog.Join(entries)
+	concurrency := decisionlog.BuildConcurrencyIndex(joined)
 	b.clouds = newClouds()
-	for _, joined := range decisionlog.Join(entries) {
+	for _, joined := range joined {
 		if !foldsIntoBaseline(joined.Decision) {
 			continue
 		}
 		identity := IdentityFromEntry(joined.Decision)
-		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), joined)
+		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), identity, joined.Decision.Host, joined, concurrency)
 	}
 	b.clouds.finish()
 	return b
@@ -151,6 +162,10 @@ func foldsIntoBaseline(e decisionlog.Entry) bool {
 // entry decision because drift asks whether this pair is normal, not whether
 // this attempt was allowed.
 func (b *Baseline) Classify(e decisionlog.Entry) Event {
+	return b.classify(e, 0)
+}
+
+func (b *Baseline) classify(e decisionlog.Entry, concurrency int) Event {
 	id := IdentityFromEntry(e)
 	idKey := identityKey(id)
 	hKey := hostKey(e.Host)
@@ -164,7 +179,7 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 		FirstSeen: firstSeen,
 		Log:       e,
 	}
-	ev.Score = b.ScoreLive(id, e.Host, decisionlog.Joined{Decision: e})
+	ev.Score = b.ScoreLive(id, e.Host, decisionlog.Joined{Decision: e}, concurrency)
 
 	if b.pairs[pKey] {
 		ev.Class = ClassKnown
@@ -205,8 +220,8 @@ func (b *Baseline) Classify(e decisionlog.Entry) Event {
 // ScoreLive scores one connection against the selected pair cloud. A live
 // ClientHello has no close-time flow metadata, so a known pair receives a
 // finite observational score without inventing byte counts.
-func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined) Score {
-	point, ok := PointFrom(joined, b.LastSeenFor(id, host))
+func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlog.Joined, concurrency int) Score {
+	point, ok := PointFrom(joined, b.LastSeenFor(id, host), concurrency)
 	if !ok {
 		return Score{}
 	}
@@ -280,6 +295,7 @@ func (b *Baseline) Save(path string) error {
 		Pairs:         sortedKeys(b.pairs),
 		CloudPoints:   b.clouds.points,
 		CloudLast:     cloudLastStrings(b.clouds),
+		CloudMeta:     b.clouds.meta,
 	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -311,11 +327,12 @@ func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return nil, fmt.Errorf("drift: parse baseline: %w", err)
 	}
-	if snap.SchemaVersion == 2 {
+	// A snapshot from any other point space is absent, not broken: the caller
+	// rebuilds it from the log. Reporting it as an unreadable cache would log a
+	// fault on every upgrade that bumps the schema, which is every upgrade that
+	// adds a dimension.
+	if snap.SchemaVersion != baselineSchemaVersion || snap.CloudMeta == nil {
 		return nil, os.ErrNotExist
-	}
-	if snap.SchemaVersion != baselineSchemaVersion {
-		return nil, fmt.Errorf("drift: baseline schema version %d unsupported (want %d)", snap.SchemaVersion, baselineSchemaVersion)
 	}
 	builtThrough, _ := time.Parse(time.RFC3339, snap.BuiltThrough)
 	cloud := newClouds()
@@ -323,6 +340,7 @@ func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
 	if cloud.points == nil {
 		cloud.points = map[string][]Point{}
 	}
+	cloud.meta = snap.CloudMeta
 	for key, value := range snap.CloudLast {
 		if timestamp, err := time.Parse(time.RFC3339, value); err == nil {
 			cloud.last[key] = timestamp

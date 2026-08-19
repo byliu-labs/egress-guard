@@ -7,6 +7,20 @@ versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Concurrency as a derived behavioural dimension.** Behaviour points gained a
+  ninth dimension, "how much else was egressing at that moment". It is computed
+  by querying the decision log — a sorted open/close timeline answering
+  point-in-time counts in O(log n) — never collected and never stored, so
+  history written before the dimension existed still yields it. A connection
+  does not count itself; denied connections count as instants, since a burst of
+  denials alongside an allowed connection is the context that makes it
+  interesting. The daemon tracks its own in-flight connections in memory for
+  traffic not yet in the log; that count is never persisted. The new read-only
+  `drift-inspect` command rebuilds clouds from a real log and reports what they
+  carry. Baseline snapshots now use schema v5; older caches are treated as
+  absent and rebuilt from the append-only log rather than reported as faults.
+  Drift remains observe-only — nothing in the allow/deny path reads any of this,
+  and the drift thresholds still need recalibrating for the new dimension.
 - **Annotate-only joint drift scoring.** Decision and close-time flow records
   are joined into persisted, per-`(identity, host)` behavioural clouds. Complete
   flows receive a robustly scaled kNN distance and dimension attribution; the

@@ -7,12 +7,15 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
+	"github.com/byliu-labs/egress-guard/internal/catalog"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+	"github.com/byliu-labs/egress-guard/internal/drift"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
@@ -68,6 +71,51 @@ func TestAllowedConnection_WritesCorrelatedFlowRecord(t *testing.T) {
 	}
 	if flow.DurationMS < 0 {
 		t.Errorf("duration_ms = %d", flow.DurationMS)
+	}
+}
+
+func TestAllowedConnection_ScoresCompletedFlowWithCapturedConcurrency(t *testing.T) {
+	scores := make(chan drift.Event, 1)
+	logPath, _, d := runAllowedConnectionWithDaemon(t, 512, func(d *Daemon) {
+		entries := []decisionlog.Entry{
+			{Kind: decisionlog.KindDecision, ConnID: "old-1", Timestamp: "2026-08-17T14:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", TeamID: "TESTTEAM", SigValid: true, Host: "allow.example"},
+			{Kind: decisionlog.KindFlow, ConnID: "old-1", BytesUp: 10, BytesDown: 10, DurationMS: 10},
+			{Kind: decisionlog.KindDecision, ConnID: "old-2", Timestamp: "2026-08-18T14:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", TeamID: "TESTTEAM", SigValid: true, Host: "allow.example"},
+			{Kind: decisionlog.KindFlow, ConnID: "old-2", BytesUp: 10, BytesDown: 10, DurationMS: 10},
+		}
+		_, hash, err := d.hasher.Hash("/usr/bin/curl")
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries[0].ExeSHA256, entries[2].ExeSHA256 = hash, hash
+		d.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, entries))
+		for i := 0; i < 9; i++ {
+			d.inflight.open("ambient-" + strconv.Itoa(i))
+		}
+		d.onCompletedScore = func(event drift.Event) { scores <- event }
+	})
+
+	var scored drift.Event
+	select {
+	case scored = <-scores:
+	case <-time.After(3 * time.Second):
+		t.Fatal("daemon did not score the completed flow")
+	}
+	if !scored.Score.Scored {
+		t.Fatalf("completed flow score = %+v, want a scored point", scored.Score)
+	}
+
+	entries, err := decisionlog.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := decisionlog.Join(entries)
+	if len(joined) != 1 || !joined[0].HasFlow {
+		t.Fatalf("joined records = %+v, want one completed flow", joined)
+	}
+	withoutConcurrency := d.classifyCompletedFlow(joined[0].Decision, joined[0].Flow, 0)
+	if scored.Score.Distance <= withoutConcurrency.Score.Distance {
+		t.Fatalf("captured concurrency did not affect score: with=%v without=%v", scored.Score.Distance, withoutConcurrency.Score.Distance)
 	}
 }
 
@@ -129,6 +177,11 @@ func TestAllowedConnection_LogsDecisionWhenReplayWriteFails(t *testing.T) {
 }
 
 func runAllowedConnectionForTest(t *testing.T, payloadBytes int) (string, int) {
+	logPath, transferred, _ := runAllowedConnectionWithDaemon(t, payloadBytes, nil)
+	return logPath, transferred
+}
+
+func runAllowedConnectionWithDaemon(t *testing.T, payloadBytes int, configure func(*Daemon)) (string, int, *Daemon) {
 	t.Helper()
 	host := "allow.example"
 	hello := spoofedClientHello(host)
@@ -141,6 +194,9 @@ func runAllowedConnectionForTest(t *testing.T, payloadBytes int) (string, int) {
 	ctx, logPath, dl, d, fk, procIDStub, cancel := newFlowRecordDaemon(t, allowlist.Layer{Allow: []string{host}})
 	defer cancel()
 	defer dl.Close()
+	if configure != nil {
+		configure(d)
+	}
 	go d.Run(ctx)
 	addr := d.WaitListen()
 	procIDStub.Set(addr.String(), procid.ProcInfo{PID: 4242, Exe: "/usr/bin/curl", Comm: "curl"})
@@ -173,7 +229,7 @@ func runAllowedConnectionForTest(t *testing.T, payloadBytes int) (string, int) {
 		t.Fatalf("close client connection: %v", err)
 	}
 	waitForSingleFlowAfterDecision(t, logPath)
-	return logPath, payloadBytes
+	return logPath, payloadBytes, d
 }
 
 func runDeniedConnectionForTest(t *testing.T) string {
@@ -327,4 +383,30 @@ type writeFailConn struct {
 
 func (c writeFailConn) Write([]byte) (int, error) {
 	return 0, errors.New("forced replay write failure")
+}
+
+// The daemon must register its own connection in the in-flight set. That
+// registration is what lets every OTHER concurrent connection see this one as
+// ambient load, and nothing else observes it — the concurrency assertions
+// elsewhere inject their ambient entries by hand, so without this test
+// `d.inflight.open(connID)` can be deleted and the whole suite stays green.
+func TestAllowedConnection_RegistersItselfAsInFlight(t *testing.T) {
+	observed := make(chan int, 1)
+	runAllowedConnectionWithDaemon(t, 64, func(d *Daemon) {
+		d.onCompletedScore = func(drift.Event) {
+			// Still inside handle(), before the deferred done(): the count of
+			// everything open is exactly this connection.
+			observed <- d.inflight.count("")
+		}
+	})
+	select {
+	case n := <-observed:
+		if n != 1 {
+			t.Fatalf("connections in flight during handling = %d, want 1: "+
+				"the daemon is not registering its own connection, so concurrent "+
+				"connections cannot see it as ambient load", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("daemon never reached the completed-flow observer")
+	}
 }

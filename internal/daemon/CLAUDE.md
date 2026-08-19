@@ -46,6 +46,24 @@ injected, which is what makes the decision branches testable without root.
   the connection closes, possibly hours after it was adjudicated, so the decision-time
   bit would be a lie about the close time. Absent is the honest answer; do not copy it
   across in `writeFlow`.
+- **The in-flight set is a convenience, never a source of truth.** `inflight` exists so a
+  connection that has not closed yet — and is therefore not in the log — can still be
+  told how much else is egressing. It is in-memory only and must never be persisted or
+  sampled into a counter: historical concurrency is *derived* from the log by
+  `decisionlog.ConcurrencyIndex`, which is what lets a new dimension be computed over
+  old history.
+- **Live and derived concurrency do not yet measure the same interval.** `inflight`
+  membership spans the whole of `handle()` — ClientHello read, prompt wait, splice —
+  and the count is sampled at accept. The derived index measures
+  `[decision.Timestamp, +flow.DurationMS)`, and `decision.Timestamp` is stamped *after*
+  the prompt returns. For a prompted connection those differ by however long the human
+  took. Harmless while nothing consumes the completed-flow score; fix it before wiring
+  one, or live points and historical points will sit in different geometries.
+- **Completed-flow scoring is off the admission path and currently unobserved.**
+  `classifyCompletedFlow` runs inside `writeFlow`, after the splice, and only when
+  `onCompletedScore` is set — which production never does. It must never move earlier:
+  scoring before the splice means inventing byte counts, and scoring on the admission
+  path means drift can delay a connection.
 - **Splice is the only path that moves payload bytes, and it never inspects them.**
 
 ## Related docs (up the tree)

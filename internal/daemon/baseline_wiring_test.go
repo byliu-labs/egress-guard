@@ -10,6 +10,31 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
 
+func TestClassifyCompletedFlowScoresCapturedConcurrency(t *testing.T) {
+	entries := []decisionlog.Entry{
+		{Kind: decisionlog.KindDecision, ConnID: "old-1", Timestamp: "2026-08-17T14:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", Host: "api.example.com"},
+		{Kind: decisionlog.KindFlow, ConnID: "old-1", BytesUp: 10, BytesDown: 10, DurationMS: 10},
+		{Kind: decisionlog.KindDecision, ConnID: "old-2", Timestamp: "2026-08-18T14:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", Host: "api.example.com"},
+		{Kind: decisionlog.KindFlow, ConnID: "old-2", BytesUp: 10, BytesDown: 10, DurationMS: 10},
+	}
+	d := &Daemon{}
+	d.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, entries))
+	decision := decisionlog.Entry{ConnID: "new", Timestamp: "2026-08-19T14:00:00Z", Exe: "/usr/bin/curl", Host: "api.example.com"}
+	flow := decisionlog.Entry{ConnID: "new", BytesUp: 10, BytesDown: 10, DurationMS: 10}
+	busy := d.classifyCompletedFlow(decision, flow, 9)
+	quiet := d.classifyCompletedFlow(decision, flow, 0)
+	if !busy.Score.Scored || !quiet.Score.Scored {
+		t.Fatalf("scores = %+v / %+v, want both scored", busy.Score, quiet.Score)
+	}
+	// Comparative, so the dimension being hard-wired to zero fails here. The
+	// bytes/hour/inter-arrival dimensions already make the distance non-zero,
+	// so a bare "Distance != 0" assertion proves only that scoring ran.
+	if busy.Score.Distance <= quiet.Score.Distance {
+		t.Fatalf("captured concurrency did not reach the score: busy=%v quiet=%v",
+			busy.Score.Distance, quiet.Score.Distance)
+	}
+}
+
 // TestClassifyDrift_UsesStoredBaseline proves the baseline stored on a daemon is
 // what classifyDrift consults: a pair the baseline learned as normal classifies
 // as known, not drift. This is the behavioral confirmation that seam #2 is live.

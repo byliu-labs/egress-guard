@@ -20,6 +20,7 @@ const (
 	DimHourCos
 	DimUserActive
 	DimInterArrival
+	DimConcurrency
 	numDims
 )
 
@@ -27,6 +28,7 @@ var DimNames = [numDims]string{
 	"bytes sent", "bytes received", "up:down ratio", "duration",
 	"hour of day", "hour of day", "whether you were at the keyboard",
 	"time since the last connection to this host",
+	"how much else was connecting at the time",
 }
 
 // Point is one connection in the continuous behaviour space.
@@ -35,9 +37,10 @@ type Point [numDims]float64
 const unknownInterArrivalSeconds = 3600
 const unknownUserActive = 0.5
 
-// PointFrom builds a complete point from a decision/flow pair. Missing flow
-// metadata remains unknown rather than being fabricated as zero.
-func PointFrom(j decisionlog.Joined, prev time.Time) (Point, bool) {
+// PointFrom builds a point from a joined connection. prev is the timestamp of
+// the previous connection for the same pair; concurrency is how many other
+// connections were in flight at the same instant.
+func PointFrom(j decisionlog.Joined, prev time.Time, concurrency int) (Point, bool) {
 	var point Point
 	if !j.HasFlow || j.Flow.BytesUp < 0 || j.Flow.BytesDown < 0 || j.Flow.DurationMS < 0 {
 		return point, false
@@ -67,6 +70,7 @@ func PointFrom(j decisionlog.Joined, prev time.Time) (Point, bool) {
 		gap = timestamp.Sub(prev).Seconds()
 	}
 	point[DimInterArrival] = math.Log1p(gap)
+	point[DimConcurrency] = math.Log1p(float64(concurrency))
 	for _, value := range point {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return Point{}, false
