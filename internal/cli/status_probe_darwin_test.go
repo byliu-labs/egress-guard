@@ -92,13 +92,17 @@ func TestSystemDomainPrintAnswersUnprivileged(t *testing.T) {
 	// Any one of these resolving is enough; the point is the domain, not the job.
 	candidates := []string{"com.apple.opendirectoryd", "com.apple.securityd", "com.apple.syslogd"}
 
-	var tried []string
+	var idle []string
+	resolved := false
 	for _, label := range candidates {
 		out, err := exec.Command("launchctl", "print", "system/"+label).CombinedOutput()
 		if err != nil {
-			tried = append(tried, label)
+			// Not "try the next one" — record it. If NONE resolves, that is the
+			// privilege regression this test exists to detect, and skipping
+			// would report green for precisely the failure it watches for.
 			continue
 		}
+		resolved = true
 		// Independently pull the pid out of the real dump, so this asserts the
 		// parser found THE JOB'S pid rather than merely some positive integer.
 		// Real output carries confounders directly above it — opendirectoryd
@@ -109,7 +113,7 @@ func TestSystemDomainPrintAnswersUnprivileged(t *testing.T) {
 			// Loaded but idle: no pid line at all. 246 of 423 system jobs on a
 			// typical machine are in this state, so try the next candidate
 			// rather than failing on an unrelated job's health.
-			tried = append(tried, label)
+			idle = append(idle, label)
 			continue
 		}
 		got := parseDaemonPrint(string(out))
@@ -128,7 +132,14 @@ func TestSystemDomainPrintAnswersUnprivileged(t *testing.T) {
 		}
 		return
 	}
-	t.Skipf("no system daemon from %v was reachable; nothing to assert about the domain", tried)
+	if !resolved {
+		t.Fatalf("no system daemon from %v answered `launchctl print system/<label>` at euid %d; "+
+			"the unprivileged system-domain access this probe depends on has regressed",
+			candidates, os.Geteuid())
+	}
+	// Every candidate answered but all were idle — the domain is reachable, which
+	// is the claim; there was simply no live pid to check the parser against.
+	t.Skipf("all of %v are loaded but idle; domain reachable, no pid to assert", idle)
 }
 
 // pidFromRealDump finds the job's own pid line without reusing the production

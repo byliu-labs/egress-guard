@@ -23,18 +23,90 @@ const launchctlListRunning = `{
 	);
 	};`
 
+// Verbatim `launchctl print system/com.byliu.egress-guard.daemon` from a host
+// where the daemon is bootstrapped and running. Kept real rather than
+// trimmed: the output carries seven other `key = <integer>` lines, and
+// `runs = 1` sits directly above `pid = 893`. A hand-written fixture with
+// only the pid line would let a loosened regex pass.
 const launchctlPrintRunning = `system/com.byliu.egress-guard.daemon = {
 	active count = 1
+	path = /Library/LaunchDaemons/com.byliu.egress-guard.daemon.plist
+	type = LaunchDaemon
 	state = running
-	program = /usr/local/bin/egress-guard
-	pid = 893
-}`
 
+	program = /usr/local/bin/egress-guard
+	arguments = {
+		/usr/local/bin/egress-guard
+		start
+		--port=8443
+		--system
+	}
+
+	stdout path = /var/db/egress-guard/.local/state/egress-guard/daemon.log
+	stderr path = /var/db/egress-guard/.local/state/egress-guard/daemon.err
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin
+		HOME => /var/db/egress-guard
+		XPC_SERVICE_NAME => com.byliu.egress-guard.daemon
+	}
+
+	domain = system
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	pid = 893
+	immediate reason = speculative
+	forks = 3
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)`
+
+// Verbatim `launchctl print` for a system daemon that is bootstrapped but not
+// currently running, relabelled to ours. Captured real because the SHAPE is
+// the point: it carries `runs = 1` and nested `state = active` stanzas with
+// no pid line anywhere. A parser that reads the wrong numeric line renders
+// "boot-daemon: running (pid 1)" for a daemon that is dead — the inverted
+// twin of the bug this file exists to prevent.
 const launchctlPrintLoadedNotRunning = `system/com.byliu.egress-guard.daemon = {
 	active count = 0
+	path = /System/Library/LaunchDaemons/com.byliu.egress-guard.daemon.plist
+	type = LaunchDaemon
 	state = not running
-	program = /usr/local/bin/egress-guard
-}`
+
+	program = /System/Library/PrivateFrameworks/CoreAccessories.framework/Support/accessoryd
+	arguments = {
+		/System/Library/PrivateFrameworks/CoreAccessories.framework/Support/accessoryd
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		MallocSpaceEfficient => 1
+		XPC_SERVICE_NAME => com.byliu.egress-guard.daemon
+	}
+
+	domain = system
+	minimum runtime = 10
+	base minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	last exit reason = JETSAM_REASON_MEMORY_IDLE_EXIT
+	last jetsam exit details = JETSAM_REASON_MEMORY_IDLE_EXIT
+
+	event triggers = {
+		com.byliu.egress-guard.daemon.matching.A2869.billboard => {
+			keepalive = 0`
 
 // User LaunchAgent output between KeepAlive restarts: registered with launchd
 // but not currently running.
@@ -369,6 +441,11 @@ func TestPrintPlatformStatus_PlistWithoutALoadedJobIsNotEnabled(t *testing.T) {
 	}
 	if !hasLine(out, "LaunchDaemon (boot-resident): NOT enabled (run `sudo egress-guard install`)") {
 		t.Errorf("status = %q; no live system-domain job was confirmed", out)
+	}
+	// The second line of this state was uncovered: mutating it to arbitrary
+	// text left the whole package green.
+	if !hasLine(out, "boot-daemon: not running") {
+		t.Errorf("status = %q; no job answered, so there is no live process", out)
 	}
 }
 
