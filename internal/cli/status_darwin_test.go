@@ -23,11 +23,16 @@ const launchctlListRunning = `{
 	);
 	};`
 
-// Verbatim `launchctl print system/com.byliu.egress-guard.daemon` from a host
-// where the daemon is bootstrapped and running. Kept real rather than
-// trimmed: the output carries seven other `key = <integer>` lines, and
-// `runs = 1` sits directly above `pid = 893`. A hand-written fixture with
-// only the pid line would let a loosened regex pass.
+// The first 40 lines of a real `launchctl print
+// system/com.byliu.egress-guard.daemon`, from a host where the daemon is
+// bootstrapped and running. Byte-identical to launchd's output over that
+// range, but truncated, so the closing brace is absent — the parser is
+// line-oriented and never sees it.
+//
+// Captured rather than hand-written because the confounders are the point:
+// seven other `key = <integer>` lines, with `runs = 1` directly above
+// `pid = 893`. A fixture carrying only the pid line lets a loosened regex
+// through, which is how "running (pid 1)" for a dead daemon stayed green.
 const launchctlPrintRunning = `system/com.byliu.egress-guard.daemon = {
 	active count = 1
 	path = /Library/LaunchDaemons/com.byliu.egress-guard.daemon.plist
@@ -69,12 +74,20 @@ const launchctlPrintRunning = `system/com.byliu.egress-guard.daemon = {
 	proxy started suspended = 0
 	checked allocations = 0 (queried = 1)`
 
-// Verbatim `launchctl print` for a system daemon that is bootstrapped but not
-// currently running, relabelled to ours. Captured real because the SHAPE is
-// the point: it carries `runs = 1` and nested `state = active` stanzas with
-// no pid line anywhere. A parser that reads the wrong numeric line renders
-// "boot-daemon: running (pid 1)" for a daemon that is dead — the inverted
-// twin of the bug this file exists to prevent.
+// A real bootstrapped-but-not-running system daemon (captured from
+// com.apple.accessoryd, which had idle-exited, and relabelled to ours).
+// Truncated like the one above, so its brace is unclosed too.
+//
+// The shape is what matters: `runs = 1` and nested `state = active` stanzas,
+// with no pid line anywhere. A parser that reads the wrong numeric line
+// renders "boot-daemon: running (pid 1)" for a daemon that is dead — the
+// inverted twin of the bug this file exists to prevent.
+//
+// Note this is idle-exit, NOT KeepAlive backoff. launchd emits more than two
+// top-level states — `xpcproxy` and `spawn scheduled` both occur during a
+// crash-restart cycle — and the backoff state carries no stale pid either, so
+// it renders the same way. Nothing parses `state`, so the distinction does not
+// reach behaviour today.
 const launchctlPrintLoadedNotRunning = `system/com.byliu.egress-guard.daemon = {
 	active count = 0
 	path = /System/Library/LaunchDaemons/com.byliu.egress-guard.daemon.plist
@@ -149,7 +162,7 @@ func TestParseDaemonPrint_RunningExtractsPID(t *testing.T) {
 }
 
 func TestParseDaemonPrint_LoadedWithoutPID(t *testing.T) {
-	state := parseDaemonPrint("system/" + launchDaemonLabel + " = {\n\tstate = waiting\n}")
+	state := parseDaemonPrint(launchctlPrintLoadedNotRunning)
 	if !state.Loaded {
 		t.Fatal("a successful system-domain print means the job is loaded")
 	}
