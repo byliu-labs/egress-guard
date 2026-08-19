@@ -32,11 +32,22 @@ var launchctlList = func() (output string, found bool) {
 	return string(out), true
 }
 
+// daemonStatusArgs is the exact command the boot-daemon probe runs. It is
+// separated from the exec so a test can pin it: every render test stubs
+// launchctlPrintDaemon, so nothing else in the suite would notice this
+// reverting to `launchctl list <label>` — which is how the user-domain probe
+// shipped in the first place.
+//
+// `launchctl print system/...` addresses the system domain directly and is
+// readable unprivileged. `launchctl list <label>` resolves in the caller's
+// user domain, where a system-domain job never appears.
+func daemonStatusArgs() []string {
+	return []string{"launchctl", "print", "system/" + launchDaemonLabel}
+}
+
 var launchctlPrintDaemon = func() (output string, found bool) {
-	// `launchctl print system/...` addresses the system domain directly and is
-	// readable by the unprivileged status command. `launchctl list <label>`
-	// would query the caller's user domain instead.
-	out, err := exec.Command("launchctl", "print", "system/"+launchDaemonLabel).CombinedOutput()
+	args := daemonStatusArgs()
+	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
 	if err != nil {
 		return "", false
 	}
