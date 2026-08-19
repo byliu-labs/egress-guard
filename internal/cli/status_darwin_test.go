@@ -331,3 +331,53 @@ func TestPrintPlatformStatus_NoTUNWarningWhenOffline(t *testing.T) {
 		t.Errorf("offline (no default route) should not fire warning; got:\n%s", out)
 	}
 }
+
+// The state the maintainer hit on 2026-08-19: `sudo egress-guard install` wrote
+// the plist, then `launchctl bootstrap` failed with exit 5. The plist is on
+// disk and the job is not bootstrapped. Run as root, `launchctl list` still
+// fails — but for root that failure is an OBSERVATION ("not bootstrapped"),
+// not a missing permission. Telling a root user to re-run `sudo egress-guard
+// status` is the no-op prescription the plan forbids, and it buries the one
+// remedy that works.
+func TestPrintPlatformStatus_RootWithUnbootstrappedPlistNamesTheRealRemedy(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, "", false)
+	stubBootDaemonInstalled(t, true)
+	stubEuid(t, 0)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "sudo egress-guard status") {
+		t.Errorf("status = %q; already root — that command is a no-op here", out)
+	}
+	if strings.Contains(out, "unknown") {
+		t.Errorf("status = %q; root can query the system domain, so this is an observation", out)
+	}
+	if !strings.Contains(out, "not bootstrapped") {
+		t.Errorf("status = %q; want the plist-present-but-not-loaded observation", out)
+	}
+}
+
+// Unprivileged, the same failed query is genuinely un-observable and must stay
+// "unknown" — the distinction this whole change exists to draw.
+func TestPrintPlatformStatus_UnprivilegedUnqueryableStaysUnknown(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, "", false)
+	stubBootDaemonInstalled(t, true)
+	stubEuid(t, 501)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "unknown (system-domain query needs root") {
+		t.Errorf("status = %q; a non-root query cannot conclude anything", out)
+	}
+	if strings.Contains(out, "not bootstrapped") {
+		t.Errorf("status = %q; unprivileged, we cannot know that", out)
+	}
+}
