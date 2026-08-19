@@ -8,12 +8,13 @@ import "github.com/byliu-labs/egress-guard/internal/pending"
 // routing state. It powers both the CLI status output and the menu-bar glyph.
 // It intentionally omits kernel-anchor state, which requires root to read.
 type StatusReport struct {
-	AgentLoaded      bool
-	DaemonPID        int
-	BootDaemonLoaded bool
-	BootDaemonPID    int
-	TUNIface         string
-	PendingReviews   int
+	AgentLoaded         bool
+	DaemonPID           int
+	BootDaemonInstalled bool
+	BootDaemonQueryable bool
+	BootDaemonPID       int
+	TUNIface            string
+	PendingReviews      int
 }
 
 // Probe gathers launchd + default-route state. It shells out only to
@@ -32,11 +33,12 @@ func Probe() StatusReport {
 		}
 	}
 	return StatusReport{
-		AgentLoaded:      agent.Loaded,
-		DaemonPID:        agent.PID,
-		BootDaemonLoaded: boot.Loaded,
-		BootDaemonPID:    boot.PID,
-		TUNIface:         iface,
-		PendingReviews:   pendingReviews,
+		AgentLoaded:         agent.Loaded,
+		DaemonPID:           agent.PID,
+		BootDaemonInstalled: BootDaemonInstalled(),
+		BootDaemonQueryable: boot.Loaded,
+		BootDaemonPID:       boot.PID,
+		TUNIface:            iface,
+		PendingReviews:      pendingReviews,
 	}
 }

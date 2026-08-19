@@ -128,6 +128,7 @@ func TestPrintPlatformStatus_LoadedButDaemonDown(t *testing.T) {
 func TestPrintPlatformStatus_LaunchDaemonNotEnabled(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, "", false)
+	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -144,6 +145,7 @@ func TestPrintPlatformStatus_LaunchDaemonNotEnabled(t *testing.T) {
 func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, launchctlListRunning, true)
+	stubBootDaemonInstalled(t, true)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -154,6 +156,49 @@ func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	}
 	if !strings.Contains(out, "boot-daemon: running (pid 12345)") {
 		t.Errorf("expected boot-daemon pid line; got:\n%s", out)
+	}
+}
+
+// The plist exists, so the daemon is installed, but an unprivileged
+// launchctl query cannot see a system-domain job. Status must not turn that
+// missing observation into either "not installed" or "not running".
+func TestPrintPlatformStatus_InstalledButUnprivilegedIsUnknown(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, "", false)
+	prev := launchDaemonInstalled
+	t.Cleanup(func() { launchDaemonInstalled = prev })
+	launchDaemonInstalled = func() bool { return true }
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "LaunchDaemon (boot-resident): NOT enabled") {
+		t.Errorf("status = %q; the plist is present, so it is installed", out)
+	}
+	if strings.Contains(out, "boot-daemon: not running") {
+		t.Errorf("status = %q; an unprivileged query cannot conclude not running", out)
+	}
+	if !strings.Contains(out, "sudo egress-guard status") {
+		t.Errorf("status = %q; it must say how to get the real answer", out)
+	}
+	if strings.Contains(out, "sudo egress-guard install") {
+		t.Errorf("status = %q; re-running install would be a no-op", out)
+	}
+}
+
+func TestPrintPlatformStatus_InstalledAndQueryableWithoutPIDIsNotRunning(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, launchctlListLoadedNotRunning, true)
+	stubBootDaemonInstalled(t, true)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, "boot-daemon: not running (KeepAlive should restart it shortly)") {
+		t.Errorf("status = %q, want a queryable not-running observation", out)
 	}
 }
 

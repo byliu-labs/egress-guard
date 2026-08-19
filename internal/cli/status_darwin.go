@@ -148,7 +148,7 @@ func printPlatformStatus(w io.Writer) error {
 		fmt.Fprintln(w, "daemon: not running")
 	}
 
-	if r.BootDaemonLoaded {
+	if r.BootDaemonInstalled {
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): ENABLED")
 	} else {
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): NOT enabled (run `sudo egress-guard install`)")
@@ -156,7 +156,9 @@ func printPlatformStatus(w io.Writer) error {
 	switch {
 	case r.BootDaemonPID > 0:
 		fmt.Fprintf(w, "boot-daemon: running (pid %d)\n", r.BootDaemonPID)
-	case r.BootDaemonLoaded:
+	case !r.BootDaemonQueryable && r.BootDaemonInstalled:
+		fmt.Fprintln(w, "boot-daemon: unknown (system-domain query needs root — try `sudo egress-guard status`)")
+	case r.BootDaemonQueryable:
 		fmt.Fprintln(w, "boot-daemon: not running (KeepAlive should restart it shortly)")
 	default:
 		fmt.Fprintln(w, "boot-daemon: not running")
