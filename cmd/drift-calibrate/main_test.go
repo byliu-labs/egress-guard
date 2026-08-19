@@ -159,3 +159,47 @@ func sortedCopy(values []float64) []float64 {
 	sort.Float64s(out)
 	return out
 }
+
+// BuildBaseline folds only non-denied decisions into a cloud
+// (foldsIntoBaseline), so a cloud point's "time since the last connection to
+// this host" skips denials. The replay must skip them too. A blocked-then-
+// retried host — a deny a moment before the allow that follows it — is the
+// ordinary shape of a denial in this log, and counting it makes the replay
+// measure one second where the cloud measured an hour.
+func TestScoresForEntriesIgnoresDeniedDecisionsWhenAdvancingLastSeen(t *testing.T) {
+	base := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	var entries []decisionlog.Entry
+	for i := 0; i < 60; i++ {
+		at := base.Add(time.Duration(i) * time.Hour)
+		// The denial lands one second before the allow it precedes. It has no
+		// flow record, because a denied connection never splices.
+		entries = append(entries, decisionlog.Entry{
+			Kind: decisionlog.KindDecision, ConnID: fmt.Sprintf("d%d", i),
+			Timestamp: at.Add(-time.Second).Format(time.RFC3339),
+			Decision:  decisionlog.DecisionDeny, Exe: "/usr/bin/git", Host: "github.com",
+		})
+		conn := fmt.Sprintf("a%d", i)
+		entries = append(entries,
+			decisionlog.Entry{Kind: decisionlog.KindDecision, ConnID: conn,
+				Timestamp: at.Format(time.RFC3339),
+				Decision:  decisionlog.DecisionAllow, Exe: "/usr/bin/git", Host: "github.com"},
+			decisionlog.Entry{Kind: decisionlog.KindFlow, ConnID: conn,
+				Timestamp: at.Format(time.RFC3339),
+				BytesUp:   1000, BytesDown: 2000, DurationMS: 8000})
+	}
+
+	scores, _, _ := scoresForEntries(entries, 0.7)
+	if len(scores) == 0 {
+		t.Fatal("no held-out connection scored")
+	}
+	sorted := sortedCopy(scores)
+	p50 := quantile(sorted, 0.5)
+	t.Logf("hourly pair with a denial one second before each allow: p50=%.3f max=%.3f",
+		p50, sorted[len(sorted)-1])
+	// Every allowed connection is identical to its history in all nine
+	// dimensions. Any real distance here is the replay reading its
+	// inter-arrival off a record the cloud never saw.
+	if p50 > 1.0 {
+		t.Fatalf("p50 = %.3f for a perfectly regular pair; denials are advancing the replay's last-seen", p50)
+	}
+}
