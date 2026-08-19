@@ -74,6 +74,9 @@ func stubLaunchctlDaemon(t *testing.T, output string, found bool) {
 func TestPrintPlatformStatus_NotEnabled(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, "", false)
+	// Without this, Probe() stats the real /Library plist: these pass on a
+	// machine where it exists and would behave differently in CI.
+	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -85,7 +88,7 @@ func TestPrintPlatformStatus_NotEnabled(t *testing.T) {
 	if !strings.Contains(out, "egress-guard enable") {
 		t.Errorf("output should point user at the `enable` command; got:\n%s", out)
 	}
-	if !strings.Contains(out, "daemon: not running") {
+	if !hasLine(out, "daemon: not running") {
 		t.Errorf("expected daemon-not-running line; got:\n%s", out)
 	}
 }
@@ -93,6 +96,9 @@ func TestPrintPlatformStatus_NotEnabled(t *testing.T) {
 func TestPrintPlatformStatus_FullyRunning(t *testing.T) {
 	stubLaunchctl(t, launchctlListRunning, true)
 	stubLaunchctlDaemon(t, "", false)
+	// Without this, Probe() stats the real /Library plist: these pass on a
+	// machine where it exists and would behave differently in CI.
+	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -109,6 +115,9 @@ func TestPrintPlatformStatus_FullyRunning(t *testing.T) {
 func TestPrintPlatformStatus_LoadedButDaemonDown(t *testing.T) {
 	stubLaunchctl(t, launchctlListLoadedNotRunning, true)
 	stubLaunchctlDaemon(t, "", false)
+	// Without this, Probe() stats the real /Library plist: these pass on a
+	// machine where it exists and would behave differently in CI.
+	stubBootDaemonInstalled(t, false)
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -120,7 +129,7 @@ func TestPrintPlatformStatus_LoadedButDaemonDown(t *testing.T) {
 	// The "KeepAlive should restart" hint is the user-actionable part:
 	// without it, "daemon: not running" alongside "LaunchAgent: ENABLED"
 	// looks like a contradiction rather than a transient state.
-	if !strings.Contains(out, "KeepAlive") {
+	if !hasLine(out, "daemon: not running (KeepAlive should restart it shortly)") {
 		t.Errorf("expected KeepAlive hint when loaded-but-not-running; got:\n%s", out)
 	}
 }

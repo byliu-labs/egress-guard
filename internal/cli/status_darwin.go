@@ -148,9 +148,16 @@ func printPlatformStatus(w io.Writer) error {
 		fmt.Fprintln(w, "daemon: not running")
 	}
 
-	if r.BootDaemonInstalled {
+	switch {
+	case r.BootDaemonInstalled && r.BootDaemonQueryable:
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): ENABLED")
-	} else {
+	case r.BootDaemonInstalled:
+		// `install` writes the plist before `launchctl bootstrap` and leaves it
+		// there when bootstrap fails, so a file on disk is not proof of
+		// protection — only a job that answered is. Report what we actually
+		// observed and let the boot-daemon line below carry the detail.
+		fmt.Fprintln(w, "LaunchDaemon (boot-resident): INSTALLED (plist present, not confirmed loaded)")
+	default:
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): NOT enabled (run `sudo egress-guard install`)")
 	}
 	switch {
