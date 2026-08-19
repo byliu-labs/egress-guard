@@ -4,6 +4,8 @@ package cli
 
 import (
 	"bytes"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -182,8 +184,26 @@ func stubLaunchctl(t *testing.T, output string, found bool) {
 func stubLaunchctlDaemon(t *testing.T, output string, found bool) {
 	t.Helper()
 	prev := launchctlPrintDaemon
-	t.Cleanup(func() { launchctlPrintDaemon = prev })
-	launchctlPrintDaemon = func() (string, bool) { return output, found }
+	prevDisabled := launchctlPrintDisabled
+	t.Cleanup(func() {
+		launchctlPrintDaemon = prev
+		launchctlPrintDisabled = prevDisabled
+	})
+	if found {
+		launchctlPrintDaemon = func() (string, error) { return output, nil }
+	} else {
+		launchctlPrintDaemon = func() (string, error) { return output, launchctlExitError(t, 113) }
+	}
+	launchctlPrintDisabled = func() (string, error) { return "", nil }
+}
+
+func launchctlExitError(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("/bin/sh", "-c", "exit "+strconv.Itoa(code)).Run()
+	if err == nil {
+		t.Fatalf("exit %d helper unexpectedly succeeded", code)
+	}
+	return err
 }
 
 func TestPrintPlatformStatus_NotEnabled(t *testing.T) {

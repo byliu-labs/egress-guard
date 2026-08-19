@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -16,8 +17,10 @@ import (
 // `launchctl print system/<label>`. Loaded means the job answered in its
 // domain; PID is 0 when loaded but not currently running.
 type agentState struct {
-	Loaded bool
-	PID    int
+	Loaded   bool
+	PID      int
+	Disabled bool
+	Unknown  bool
 }
 
 // launchctlList shells out to `launchctl list com.byliu.egress-guard`. The
@@ -45,13 +48,15 @@ func daemonStatusArgs() []string {
 	return []string{"launchctl", "print", "system/" + launchDaemonLabel}
 }
 
-var launchctlPrintDaemon = func() (output string, found bool) {
+var launchctlPrintDaemon = func() (output string, err error) {
 	args := daemonStatusArgs()
 	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
-	if err != nil {
-		return "", false
-	}
-	return string(out), true
+	return string(out), err
+}
+
+var launchctlPrintDisabled = func() (output string, err error) {
+	out, err := exec.Command("launchctl", "print-disabled", "system").CombinedOutput()
+	return string(out), err
 }
 
 // pidLineRe matches the `"PID" = 12345;` line in launchctl's plist-style
@@ -90,11 +95,22 @@ func parseDaemonPrint(s string) agentState {
 }
 
 func checkDaemonJob() agentState {
-	out, found := launchctlPrintDaemon()
-	if !found {
-		return agentState{}
+	out, err := launchctlPrintDaemon()
+	if err == nil {
+		return parseDaemonPrint(out)
 	}
-	return parseDaemonPrint(out)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 113 {
+		return agentState{Unknown: true}
+	}
+	disabled, err := launchctlPrintDisabled()
+	if err != nil {
+		return agentState{Unknown: true}
+	}
+	if strings.Contains(disabled, `"`+launchDaemonLabel+`" => true`) {
+		return agentState{Disabled: true}
+	}
+	return agentState{}
 }
 
 // routeGetDefault shells out to `route get default` and returns its stdout.
@@ -173,14 +189,23 @@ func printPlatformStatus(w io.Writer) error {
 		fmt.Fprintln(w, "daemon: not running")
 	}
 
-	if r.BootDaemonLoaded {
+	switch {
+	case r.BootDaemonDisabled:
+		fmt.Fprintf(w, "LaunchDaemon (boot-resident): DISABLED (run `sudo launchctl enable system/%s`)\n", launchDaemonLabel)
+	case r.BootDaemonUnknown:
+		fmt.Fprintln(w, "LaunchDaemon (boot-resident): UNKNOWN (launchctl status query failed)")
+	case r.BootDaemonLoaded:
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): ENABLED")
-	} else {
+	default:
 		fmt.Fprintln(w, "LaunchDaemon (boot-resident): NOT enabled (run `sudo egress-guard install`)")
 	}
 	switch {
 	case r.BootDaemonPID > 0:
 		fmt.Fprintf(w, "boot-daemon: running (pid %d)\n", r.BootDaemonPID)
+	case r.BootDaemonDisabled:
+		fmt.Fprintf(w, "boot-daemon: disabled (run `sudo launchctl enable system/%s`)\n", launchDaemonLabel)
+	case r.BootDaemonUnknown:
+		fmt.Fprintln(w, "boot-daemon: unknown (launchctl status query failed)")
 	case r.BootDaemonLoaded:
 		fmt.Fprintln(w, "boot-daemon: not running (KeepAlive should restart it shortly)")
 	default:

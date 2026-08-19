@@ -18,6 +18,8 @@ jobs:
           cache: true
       - name: Test
         run: make test
+      - name: Integration test compile
+        run: make test-integration
       - name: Build
         run: make build
       - name: Linux cross-compile

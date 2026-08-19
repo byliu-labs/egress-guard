@@ -3,9 +3,48 @@
 package cli
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestWriteAndBootstrapLaunchDaemonPlist_RemovesNewFileOnFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.plist")
+	bootstrapErr := errors.New("bootstrap failed")
+
+	err := writeAndBootstrapLaunchDaemonPlist(path, []byte("new"), func(string) ([]byte, error) {
+		return []byte("launchctl output"), bootstrapErr
+	})
+	if err == nil {
+		t.Fatal("writeAndBootstrapLaunchDaemonPlist succeeded, want bootstrap failure")
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("plist stat error = %v, want file removed", statErr)
+	}
+}
+
+func TestWriteAndBootstrapLaunchDaemonPlist_RestoresPreviousFileOnFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.plist")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := writeAndBootstrapLaunchDaemonPlist(path, []byte("new"), func(string) ([]byte, error) {
+		return nil, errors.New("bootstrap failed")
+	})
+	if err == nil {
+		t.Fatal("writeAndBootstrapLaunchDaemonPlist succeeded, want bootstrap failure")
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "old" {
+		t.Fatalf("restored plist = %q, want %q", got, "old")
+	}
+}
 
 func TestRenderLaunchDaemonPlist_SubstitutesAllPlaceholders(t *testing.T) {
 	got := renderLaunchDaemonPlist(
