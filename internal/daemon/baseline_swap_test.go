@@ -3,8 +3,10 @@ package daemon
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/drift"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/signature"
@@ -51,6 +53,23 @@ func TestDaemon_SetBaseline_RaceFreeWithClassify(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+func TestDaemon_SetBaselineDoesNotRollLiveLastSeenBack(t *testing.T) {
+	entry := decisionlog.Entry{
+		Timestamp: "2026-08-19T12:00:00Z", Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "allow.example",
+	}
+	baseline := drift.BuildBaseline(&catalog.Catalog{}, []decisionlog.Entry{entry})
+	d := &Daemon{}
+	d.SetBaseline(baseline)
+	key := drift.BaselinePairKey(entry)
+	live := time.Date(2026, 8, 19, 12, 30, 0, 0, time.UTC)
+	d.lastSeen.advance(key, live)
+	d.SetBaseline(baseline)
+	if got := d.lastSeen.at(key); !got.Equal(live) {
+		t.Fatalf("SetBaseline rolled live reference back to %v", got)
+	}
 }
 
 // TestDaemon_SetBaseline_NilStaysGeneric verifies a daemon with no baseline set

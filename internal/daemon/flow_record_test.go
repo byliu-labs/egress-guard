@@ -130,6 +130,10 @@ func TestCompletedFlow_SteadyPairDoesNotDriftWithinTheRefreshWindow(t *testing.T
 			baseline := drift.BuildBaseline(&catalog.Catalog{}, steadyPairHistory(hash, 60*time.Second, 40))
 			d.SetBaseline(baseline)
 			d.now = func() time.Time { return steadyPairEnd.Add(offset) }
+			if offset > time.Minute {
+				key := drift.BaselinePairKey(decisionlog.Entry{Exe: "/usr/bin/curl", ExeSHA256: hash, TeamID: "TESTTEAM", Host: "allow.example"})
+				d.lastSeen.advance(key, steadyPairEnd.Add(offset-time.Minute))
+			}
 			d.onCompletedScore = func(ev drift.Event) { got = ev }
 		})
 		if !got.Score.Scored {
@@ -140,7 +144,7 @@ func TestCompletedFlow_SteadyPairDoesNotDriftWithinTheRefreshWindow(t *testing.T
 
 	early, late := scoreAt(time.Minute), scoreAt(59*time.Minute)
 	t.Logf("steady pair: +1min=%.3f +59min=%.3f", early, late)
-	if late > early+2.0 {
+	if late > 4.0 {
 		t.Fatalf("+1min scored %.3f, +59min scored %.3f: distance tracks the refresh window, not the traffic", early, late)
 	}
 }

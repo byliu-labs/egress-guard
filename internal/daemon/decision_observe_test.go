@@ -11,6 +11,7 @@ import (
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+	"github.com/byliu-labs/egress-guard/internal/drift"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
@@ -168,6 +169,13 @@ func TestHandle_ObserveOnlyKeepsObserveDecisionOnDialFailure(t *testing.T) {
 	}
 	if !strings.HasPrefix(got.Reason, "net_error: upstream_dial_failed after host_denylisted:") {
 		t.Errorf("Reason = %q, want net_error preserving policy reason", got.Reason)
+	}
+	at, err := time.Parse(time.RFC3339, got.Timestamp)
+	if err != nil {
+		t.Fatalf("decision timestamp: %v", err)
+	}
+	if live := d.lastSeen.at(drift.BaselinePairKey(got)); !live.Equal(at) {
+		t.Errorf("flowless accepted decision advanced reference to %v, want %v", live, at)
 	}
 }
 

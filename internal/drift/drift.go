@@ -167,7 +167,12 @@ func FoldsIntoBaseline(e decisionlog.Entry) bool {
 // invariant of this package, and a caller that copies it silently diverges the
 // day the bucketing changes.
 func BaselinePairKey(e decisionlog.Entry) string {
-	return pairKey(identityKey(IdentityFromEntry(e)), hostKey(e.Host))
+	return BaselinePairKeyFor(IdentityFromEntry(e), e.Host)
+}
+
+// BaselinePairKeyFor applies the same bucket rule to baseline pair metadata.
+func BaselinePairKeyFor(id catalog.Identity, host string) string {
+	return pairKey(identityKey(id), hostKey(host))
 }
 
 // Classify scores one decision-log entry against the baseline. It ignores the
@@ -242,11 +247,8 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // using the baseline's frozen last-seen makes inter-arrival distance grow with
 // file position instead.
 //
-// The daemon does NOT do this: it scores through ScoreLive against a baseline
-// rebuilt on an hourly ticker, so its own inter-arrival reference is frozen
-// within each window. A caller reading a threshold off replayed quantiles is
-// therefore reading it off the clouds' geometry, not off what the daemon will
-// measure at minute 59.
+// The daemon advances its own live per-pair reference as accepted decisions
+// complete, so replayed quantiles and daemon distances use the same geometry.
 func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
 	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {

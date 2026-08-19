@@ -111,6 +111,7 @@ type Daemon struct {
 	mu       sync.Mutex
 	hasher   *procid.ExeHasher
 	inflight *inflight
+	lastSeen *lastSeen
 	// onCompletedScore is an in-memory observer for completed-flow scoring.
 	// Production leaves it nil; it never affects admission or persistence.
 	onCompletedScore func(drift.Event)
@@ -133,8 +134,12 @@ func New(opts Options) (*Daemon, error) {
 	if opts.Allow == nil || opts.Log == nil || opts.Kernel == nil {
 		return nil, errors.New("daemon: Options missing required field")
 	}
-	d := &Daemon{opts: opts, ready: make(chan struct{}), dial: net.Dial, hasher: procid.NewExeHasher(), inflight: newInflight()}
-	d.baseline.Store(opts.Baseline) // may be nil; atomic.Pointer handles it
+	d := &Daemon{
+		opts: opts, ready: make(chan struct{}), dial: net.Dial,
+		hasher: procid.NewExeHasher(), inflight: newInflight(),
+		lastSeen: newLastSeen(maxLiveLastSeenPairs),
+	}
+	d.SetBaseline(opts.Baseline) // may be nil; atomic.Pointer handles it
 	return d, nil
 }
 
@@ -142,6 +147,10 @@ func New(opts Options) (*Daemon, error) {
 // Safe to call from a background refresher while connection goroutines classify.
 // The baseline is observe-only enrichment: swapping it never changes allow/deny.
 func (d *Daemon) SetBaseline(b *drift.Baseline) {
+	if d.lastSeen == nil {
+		d.lastSeen = newLastSeen(maxLiveLastSeenPairs)
+	}
+	d.lastSeen.seed(b)
 	d.baseline.Store(b)
 }
 

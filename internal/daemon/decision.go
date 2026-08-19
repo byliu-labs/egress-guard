@@ -129,6 +129,7 @@ func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int6
 	// completed-flow score yet (internal/drift is observe-only), and scoring
 	// runs a kNN over the pair's whole cloud — ~140us per connection that
 	// would otherwise be spent producing a value no caller can read.
+	defer d.lastSeen.advanceEntry(entry)
 	if d.onCompletedScore != nil {
 		d.onCompletedScore(d.classifyCompletedFlow(entry, flow, concurrency))
 	}
@@ -413,7 +414,8 @@ func (d *Daemon) classifyCompletedFlow(entry, flow decisionlog.Entry, concurrenc
 	}
 	ev := b.Classify(entry)
 	id := drift.IdentityFromEntry(entry)
-	ev.Score = b.ScoreLive(id, entry.Host, decisionlog.Joined{Decision: entry, Flow: flow, HasFlow: true}, concurrency)
+	ev.Score = b.ScoreAgainst(id, entry.Host, decisionlog.Joined{Decision: entry, Flow: flow, HasFlow: true},
+		d.lastSeen.at(drift.BaselinePairKey(entry)), concurrency)
 	return ev
 }
 
@@ -523,6 +525,7 @@ func (d *Daemon) handle(conn net.Conn) {
 				} else {
 					entry.Reason = "net_error: upstream_dial_failed: " + err.Error()
 				}
+				d.lastSeen.advanceEntry(entry)
 				_ = d.opts.Log.Write(entry)
 				return
 			}
@@ -546,6 +549,7 @@ func (d *Daemon) handle(conn net.Conn) {
 				entry.Decision = decisionlog.DecisionDeny
 				entry.Reason = "upstream_write_failed: " + err.Error()
 			}
+			d.lastSeen.advanceEntry(entry)
 			_ = d.opts.Log.Write(entry)
 			return
 		}
