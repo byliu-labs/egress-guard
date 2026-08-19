@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
@@ -56,5 +57,56 @@ func TestScoreLiveAddsInFlightConcurrencyToTheScore(t *testing.T) {
 	// the dimension hard-wired to zero, since the other eight already differ.
 	if busy.Distance <= quiet.Distance {
 		t.Fatalf("concurrency did not reach the score: busy=%v quiet=%v", busy.Distance, quiet.Distance)
+	}
+}
+
+// ScoreLive must remain exactly ScoreAgainst with the baseline's own
+// last-seen, so that adding the explicit-prev entry point did not quietly give
+// the daemon a second scoring path. This is a one-line delegation today and
+// the assertion is correspondingly weak — its job is to fail if someone later
+// gives ScoreLive its own body.
+func TestScoreLiveDelegatesToScoreAgainstWithStoredLastSeen(t *testing.T) {
+	entries := append(
+		flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow),
+		flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)...)
+	baseline := BuildBaseline(&catalog.Catalog{}, entries)
+	pair := catalog.Identity{ExeBasename: "git"}
+	joined := testJoined("2026-08-19T03:00:00Z", 4_000_000, 1, 9000, nil)
+
+	live := baseline.ScoreLive(pair, "github.com", joined, 3)
+	same := baseline.ScoreAgainst(pair, "github.com", joined, baseline.LastSeenFor(pair, "github.com"), 3)
+	// Without this, two unscored results would agree trivially and the test
+	// would pass while proving nothing.
+	if !live.Scored {
+		t.Fatalf("live = %+v, want a scored result for a pair with history", live)
+	}
+	if live.Distance != same.Distance || live.Scored != same.Scored {
+		t.Fatalf("ScoreLive = %+v, ScoreAgainst(storedLastSeen) = %+v; they must agree", live, same)
+	}
+}
+
+// The supplied prev must actually reach DimInterArrival. A replaying caller
+// advances it per connection; if ScoreAgainst ignored it in favour of the
+// baseline's frozen value, calibration would measure file position again.
+func TestScoreAgainstHonoursSuppliedPrev(t *testing.T) {
+	entries := append(
+		flowPair("a1", "2026-08-17T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow),
+		flowPair("a2", "2026-08-18T14:00:00Z", "/usr/bin/git", "github.com", 1, decisionlog.DecisionAllow)...)
+	baseline := BuildBaseline(&catalog.Catalog{}, entries)
+	pair := catalog.Identity{ExeBasename: "git"}
+	joined := testJoined("2026-08-19T03:00:00Z", 1, 100, 50, nil)
+
+	stale, _ := time.Parse(time.RFC3339, "2026-08-18T14:00:00Z")
+	recent, _ := time.Parse(time.RFC3339, "2026-08-19T02:59:00Z")
+	far := baseline.ScoreAgainst(pair, "github.com", joined, stale, 0)
+	near := baseline.ScoreAgainst(pair, "github.com", joined, recent, 0)
+	if !far.Scored || !near.Scored {
+		t.Fatalf("scores = %+v / %+v, want both scored", far, near)
+	}
+	// Direction, not just difference: a connection that follows its predecessor
+	// closely must sit nearer the cloud than one that follows a day-old one,
+	// because the cloud's own points are a day apart.
+	if !(near.Distance > far.Distance) {
+		t.Fatalf("prev did not reach DimInterArrival: stale=%v recent=%v", far.Distance, near.Distance)
 	}
 }

@@ -66,10 +66,39 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 	index := decisionlog.BuildConcurrencyIndex(joined)
 	var scores []float64
 	infinite, unscorable := 0, 0
+	// Seed the replay's last-seen state from the training half, so the first
+	// held-out connection is measured against the connection that really
+	// preceded it rather than against nothing.
+	lastSeen := map[string]time.Time{}
+	for _, item := range joined[:cut] {
+		if !drift.FoldsIntoBaseline(item.Decision) {
+			continue
+		}
+		if at, err := time.Parse(time.RFC3339, item.Decision.Timestamp); err == nil {
+			lastSeen[drift.BaselinePairKey(item.Decision)] = at
+		}
+	}
 	for _, item := range joined[cut:] {
 		identity := drift.IdentityFromEntry(item.Decision)
-		score := baseline.ScoreLive(identity, item.Decision.Host, item,
-			concurrencyAt(index, item.Decision))
+		key := drift.BaselinePairKey(item.Decision)
+		at, err := time.Parse(time.RFC3339, item.Decision.Timestamp)
+		if err != nil {
+			unscorable++
+			continue
+		}
+		// Advance last-seen only for the entries that built the clouds. A denial
+		// contributes no point, so it must not become the reference the next
+		// connection's inter-arrival is measured from.
+		folds := drift.FoldsIntoBaseline(item.Decision)
+		// Walk forward on both derived dimensions at once: inter-arrival against
+		// the previous connection for this pair as the replay has seen it so
+		// far, concurrency at this same instant. One parse serves both, so they
+		// cannot disagree about when this connection happened.
+		score := baseline.ScoreAgainst(identity, item.Decision.Host, item,
+			lastSeen[key], index.At(at, item.Decision.ConnID))
+		if folds {
+			lastSeen[key] = at
+		}
 		if !score.Scored {
 			unscorable++
 			continue
@@ -81,17 +110,6 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 		scores = append(scores, score.Distance)
 	}
 	return scores, infinite, unscorable
-}
-
-// concurrencyAt answers how much else was egressing when this connection
-// opened. An unparseable timestamp yields zero, matching BuildBaseline, which
-// drops such a record before it reaches a cloud.
-func concurrencyAt(index *decisionlog.ConcurrencyIndex, decision decisionlog.Entry) int {
-	at, err := time.Parse(time.RFC3339, decision.Timestamp)
-	if err != nil {
-		return 0
-	}
-	return index.At(at, decision.ConnID)
 }
 
 func quantile(sorted []float64, q float64) float64 {
