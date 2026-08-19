@@ -26,10 +26,20 @@ func requireBootE2E(t *testing.T) {
 	}
 }
 
-var launchctlPIDRe = regexp.MustCompile(`"PID"\s*=\s*(\d+)`)
+// The boot daemon lives in the system domain, which `launchctl list <label>`
+// cannot resolve — it queries the caller's user domain, and answers 113 there
+// even under sudo. `launchctl print system/<label>` addresses it directly and
+// prints a bare `pid = N` rather than the plist-style `"PID" = N;`. This is
+// the same correction internal/cli got; leaving it here would mean the boot
+// E2E could never observe the daemon it exists to test.
+//
+// UNVERIFIED as root: this environment has no TTY for sudo, and the whole file
+// is gated behind skipIfNotRoot + EGRESS_GUARD_BOOT_E2E=1. The unprivileged
+// half of the claim is covered by TestSystemDomainPrintAnswersUnprivileged.
+var launchctlPIDRe = regexp.MustCompile(`(?m)^\s*(?:pid|"PID")\s*=\s*(\d+)\s*;?\s*$`)
 
 func launchctlPID(label string) (int, bool) {
-	out, err := exec.Command("launchctl", "list", label).CombinedOutput()
+	out, err := exec.Command("launchctl", "print", "system/"+label).CombinedOutput()
 	if err != nil {
 		return 0, false
 	}

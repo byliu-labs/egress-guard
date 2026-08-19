@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-// Real launchctl output captured from a running install. Format is the
-// classic plist-style dump (not JSON) — the command predates launchctl's
-// `print` subcommand and still uses this format on every macOS we support.
+// Real `launchctl list` output captured from a running user LaunchAgent.
 const launchctlListRunning = `{
 	"LimitLoadToSessionType" = "Aqua";
 	"Label" = "com.byliu.egress-guard";
@@ -23,11 +21,108 @@ const launchctlListRunning = `{
 		"start";
 		"--port=8443";
 	);
-};`
+	};`
 
-// Same plist, between KeepAlive restarts: registered with launchd but not
-// currently running. The PID line is absent — that's how we distinguish
-// "ENABLED but daemon down" from "ENABLED and daemon up".
+// The first 40 lines of a real `launchctl print
+// system/com.byliu.egress-guard.daemon`, from a host where the daemon is
+// bootstrapped and running. Byte-identical to launchd's output over that
+// range, but truncated, so the closing brace is absent — the parser is
+// line-oriented and never sees it.
+//
+// Captured rather than hand-written because the confounders are the point:
+// seven other `key = <integer>` lines, with `runs = 1` directly above
+// `pid = 893`. A fixture carrying only the pid line lets a loosened regex
+// through, which is how "running (pid 1)" for a dead daemon stayed green.
+const launchctlPrintRunning = `system/com.byliu.egress-guard.daemon = {
+	active count = 1
+	path = /Library/LaunchDaemons/com.byliu.egress-guard.daemon.plist
+	type = LaunchDaemon
+	state = running
+
+	program = /usr/local/bin/egress-guard
+	arguments = {
+		/usr/local/bin/egress-guard
+		start
+		--port=8443
+		--system
+	}
+
+	stdout path = /var/db/egress-guard/.local/state/egress-guard/daemon.log
+	stderr path = /var/db/egress-guard/.local/state/egress-guard/daemon.err
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin
+		HOME => /var/db/egress-guard
+		XPC_SERVICE_NAME => com.byliu.egress-guard.daemon
+	}
+
+	domain = system
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	pid = 893
+	immediate reason = speculative
+	forks = 3
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)`
+
+// A real bootstrapped-but-not-running system daemon (captured from
+// com.apple.accessoryd, which had idle-exited, and relabelled to ours).
+// Truncated like the one above, so its brace is unclosed too.
+//
+// The shape is what matters: `runs = 1` and nested `state = active` stanzas,
+// with no pid line anywhere. A parser that reads the wrong numeric line
+// renders "boot-daemon: running (pid 1)" for a daemon that is dead — the
+// inverted twin of the bug this file exists to prevent.
+//
+// Note this is idle-exit, NOT KeepAlive backoff. launchd emits more than two
+// top-level states — `xpcproxy` and `spawn scheduled` both occur during a
+// crash-restart cycle — and the backoff state carries no stale pid either, so
+// it renders the same way. Nothing parses `state`, so the distinction does not
+// reach behaviour today.
+const launchctlPrintLoadedNotRunning = `system/com.byliu.egress-guard.daemon = {
+	active count = 0
+	path = /System/Library/LaunchDaemons/com.byliu.egress-guard.daemon.plist
+	type = LaunchDaemon
+	state = not running
+
+	program = /System/Library/PrivateFrameworks/CoreAccessories.framework/Support/accessoryd
+	arguments = {
+		/System/Library/PrivateFrameworks/CoreAccessories.framework/Support/accessoryd
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		MallocSpaceEfficient => 1
+		XPC_SERVICE_NAME => com.byliu.egress-guard.daemon
+	}
+
+	domain = system
+	minimum runtime = 10
+	base minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	last exit reason = JETSAM_REASON_MEMORY_IDLE_EXIT
+	last jetsam exit details = JETSAM_REASON_MEMORY_IDLE_EXIT
+
+	event triggers = {
+		com.byliu.egress-guard.daemon.matching.A2869.billboard => {
+			keepalive = 0`
+
+// User LaunchAgent output between KeepAlive restarts: registered with launchd
+// but not currently running.
 const launchctlListLoadedNotRunning = `{
 	"LimitLoadToSessionType" = "Aqua";
 	"Label" = "com.byliu.egress-guard";
@@ -56,6 +151,26 @@ func TestParseAgentList_LoadedNotRunning(t *testing.T) {
 	}
 }
 
+func TestParseDaemonPrint_RunningExtractsPID(t *testing.T) {
+	state := parseDaemonPrint(launchctlPrintRunning)
+	if !state.Loaded {
+		t.Fatal("a successful system-domain print means the job is loaded")
+	}
+	if state.PID != 893 {
+		t.Errorf("PID = %d, want 893", state.PID)
+	}
+}
+
+func TestParseDaemonPrint_LoadedWithoutPID(t *testing.T) {
+	state := parseDaemonPrint(launchctlPrintLoadedNotRunning)
+	if !state.Loaded {
+		t.Fatal("a successful system-domain print means the job is loaded")
+	}
+	if state.PID != 0 {
+		t.Errorf("PID = %d, want 0", state.PID)
+	}
+}
+
 // stubLaunchctl swaps the launchctlList var for the duration of the test.
 func stubLaunchctl(t *testing.T, output string, found bool) {
 	t.Helper()
@@ -66,9 +181,9 @@ func stubLaunchctl(t *testing.T, output string, found bool) {
 
 func stubLaunchctlDaemon(t *testing.T, output string, found bool) {
 	t.Helper()
-	prev := launchctlListDaemon
-	t.Cleanup(func() { launchctlListDaemon = prev })
-	launchctlListDaemon = func() (string, bool) { return output, found }
+	prev := launchctlPrintDaemon
+	t.Cleanup(func() { launchctlPrintDaemon = prev })
+	launchctlPrintDaemon = func() (string, bool) { return output, found }
 }
 
 func TestPrintPlatformStatus_NotEnabled(t *testing.T) {
@@ -85,7 +200,7 @@ func TestPrintPlatformStatus_NotEnabled(t *testing.T) {
 	if !strings.Contains(out, "egress-guard enable") {
 		t.Errorf("output should point user at the `enable` command; got:\n%s", out)
 	}
-	if !strings.Contains(out, "daemon: not running") {
+	if !hasLine(out, "daemon: not running") {
 		t.Errorf("expected daemon-not-running line; got:\n%s", out)
 	}
 }
@@ -120,7 +235,7 @@ func TestPrintPlatformStatus_LoadedButDaemonDown(t *testing.T) {
 	// The "KeepAlive should restart" hint is the user-actionable part:
 	// without it, "daemon: not running" alongside "LaunchAgent: ENABLED"
 	// looks like a contradiction rather than a transient state.
-	if !strings.Contains(out, "KeepAlive") {
+	if !hasLine(out, "daemon: not running (KeepAlive should restart it shortly)") {
 		t.Errorf("expected KeepAlive hint when loaded-but-not-running; got:\n%s", out)
 	}
 }
@@ -143,7 +258,9 @@ func TestPrintPlatformStatus_LaunchDaemonNotEnabled(t *testing.T) {
 
 func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	stubLaunchctl(t, "", false)
-	stubLaunchctlDaemon(t, launchctlListRunning, true)
+	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
+	// A bootstrapped job is authoritative even if its plist is no longer on
+	// disk. Status must key ENABLED on launchd's live system-domain state.
 	var buf bytes.Buffer
 	if err := printPlatformStatus(&buf); err != nil {
 		t.Fatalf("printPlatformStatus: %v", err)
@@ -152,8 +269,30 @@ func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	if !strings.Contains(out, "LaunchDaemon (boot-resident): ENABLED") {
 		t.Errorf("expected LaunchDaemon ENABLED line; got:\n%s", out)
 	}
-	if !strings.Contains(out, "boot-daemon: running (pid 12345)") {
+	if !strings.Contains(out, "boot-daemon: running (pid 893)") {
 		t.Errorf("expected boot-daemon pid line; got:\n%s", out)
+	}
+}
+
+func TestPrintPlatformStatus_LoadedWithoutPIDIsNotRunning(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, launchctlPrintLoadedNotRunning, true)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	// The claim this PR rests on: a job launchd has bootstrapped is ENABLED
+	// even while its process is down between KeepAlive restarts. Without this
+	// line, keying ENABLED on BootDaemonPID>0 instead of BootDaemonLoaded
+	// passes the whole suite while rendering "NOT enabled (run sudo
+	// egress-guard install)" over a healthy install.
+	if !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
+		t.Errorf("status = %q; a bootstrapped job is enabled even with no live process", out)
+	}
+	if !hasLine(out, "boot-daemon: not running (KeepAlive should restart it shortly)") {
+		t.Errorf("status = %q, want a queryable not-running observation", out)
 	}
 }
 
@@ -284,5 +423,55 @@ func TestPrintPlatformStatus_NoTUNWarningWhenOffline(t *testing.T) {
 	out := buf.String()
 	if strings.Contains(out, "WARNING") {
 		t.Errorf("offline (no default route) should not fire warning; got:\n%s", out)
+	}
+}
+
+// hasLine matches a whole output line. `strings.Contains(out, "daemon: not
+// running")` is satisfied by the "boot-daemon: not running" line, so a
+// substring check on any of these strings cannot fail for the reason it claims.
+func hasLine(out, want string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
+// A plist without a successful system-domain print is not proof that the job
+// is loaded. This is the failed-bootstrap state.
+func TestPrintPlatformStatus_PlistWithoutALoadedJobIsNotEnabled(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, "", false)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
+		t.Errorf("status = %q; no job answered, so a file on disk is not proof of protection", out)
+	}
+	if !hasLine(out, "LaunchDaemon (boot-resident): NOT enabled (run `sudo egress-guard install`)") {
+		t.Errorf("status = %q; no live system-domain job was confirmed", out)
+	}
+	// The second line of this state was uncovered: mutating it to arbitrary
+	// text left the whole package green.
+	if !hasLine(out, "boot-daemon: not running") {
+		t.Errorf("status = %q; no job answered, so there is no live process", out)
+	}
+}
+
+// A job that actually answered is the only thing that earns the word ENABLED.
+func TestPrintPlatformStatus_QueryableJobEarnsEnabled(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	if out := buf.String(); !hasLine(out, "LaunchDaemon (boot-resident): ENABLED") {
+		t.Errorf("status = %q, want ENABLED for a job launchd confirmed", out)
 	}
 }

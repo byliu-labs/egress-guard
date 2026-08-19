@@ -11,10 +11,10 @@ import (
 	"strings"
 )
 
-// agentState captures what `launchctl list <label>` tells us about the
-// daemon's launchd registration. Loaded means the plist is bootstrapped
-// into a launchd domain; PID is 0 when loaded but not currently running
-// (e.g., between KeepAlive restarts), or when not loaded at all.
+// agentState captures launchd registration. The user LaunchAgent is read with
+// `launchctl list`; the system LaunchDaemon is read with
+// `launchctl print system/<label>`. Loaded means the job answered in its
+// domain; PID is 0 when loaded but not currently running.
 type agentState struct {
 	Loaded bool
 	PID    int
@@ -32,8 +32,22 @@ var launchctlList = func() (output string, found bool) {
 	return string(out), true
 }
 
-var launchctlListDaemon = func() (output string, found bool) {
-	out, err := exec.Command("launchctl", "list", launchDaemonLabel).CombinedOutput()
+// daemonStatusArgs is the exact command the boot-daemon probe runs. It is
+// separated from the exec so a test can pin it: every render test stubs
+// launchctlPrintDaemon, so nothing else in the suite would notice this
+// reverting to `launchctl list <label>` — which is how the user-domain probe
+// shipped in the first place.
+//
+// `launchctl print system/...` addresses the system domain directly and is
+// readable unprivileged. `launchctl list <label>` resolves in the caller's
+// user domain, where a system-domain job never appears.
+func daemonStatusArgs() []string {
+	return []string{"launchctl", "print", "system/" + launchDaemonLabel}
+}
+
+var launchctlPrintDaemon = func() (output string, found bool) {
+	args := daemonStatusArgs()
+	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
 	if err != nil {
 		return "", false
 	}
@@ -45,6 +59,7 @@ var launchctlListDaemon = func() (output string, found bool) {
 // running, which is how we distinguish "ENABLED but daemon down" from
 // "ENABLED and daemon up".
 var pidLineRe = regexp.MustCompile(`"PID"\s*=\s*(\d+)`)
+var daemonPIDLineRe = regexp.MustCompile(`(?m)^\s*(?:pid|"PID")\s*=\s*(\d+)\s*;?\s*$`)
 
 func parseAgentList(s string) agentState {
 	state := agentState{Loaded: true}
@@ -64,12 +79,22 @@ func checkAgent() agentState {
 	return parseAgentList(out)
 }
 
+func parseDaemonPrint(s string) agentState {
+	state := agentState{Loaded: true}
+	if m := daemonPIDLineRe.FindStringSubmatch(s); m != nil {
+		if pid, err := strconv.Atoi(m[1]); err == nil {
+			state.PID = pid
+		}
+	}
+	return state
+}
+
 func checkDaemonJob() agentState {
-	out, found := launchctlListDaemon()
+	out, found := launchctlPrintDaemon()
 	if !found {
 		return agentState{}
 	}
-	return parseAgentList(out)
+	return parseDaemonPrint(out)
 }
 
 // routeGetDefault shells out to `route get default` and returns its stdout.
