@@ -81,21 +81,7 @@ func TestScoresForEntriesExcludesUnscorableDecisions(t *testing.T) {
 // quantiles then describe a distribution the daemon will never produce, and
 // the threshold read off them is calibrated against the wrong geometry.
 func TestScoresForEntries_ScoresConcurrencyInTheCloudsOwnSpace(t *testing.T) {
-	base := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
-	var entries []decisionlog.Entry
-	id := 0
-	for slot := 0; slot < 40; slot++ {
-		stamp := base.Add(time.Duration(slot) * 30 * time.Second).Format(time.RFC3339)
-		for k := 0; k < 12; k++ { // every connection arrives in a burst of 12
-			conn := fmt.Sprintf("c%d", id)
-			entries = append(entries,
-				decisionlog.Entry{Kind: decisionlog.KindDecision, ConnID: conn, Timestamp: stamp,
-					Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", Comm: "git", Host: "github.com"},
-				decisionlog.Entry{Kind: decisionlog.KindFlow, ConnID: conn, Timestamp: stamp,
-					BytesUp: 1000, BytesDown: 2000, DurationMS: 8000})
-			id++
-		}
-	}
+	entries := burstyLog()
 
 	scores, infinite, unscorable := scoresForEntries(entries, 0.7)
 	if len(scores) == 0 || infinite != 0 || unscorable != 0 {
@@ -125,21 +111,7 @@ func TestScoresForEntries_ScoresConcurrencyInTheCloudsOwnSpace(t *testing.T) {
 // behaviour, and any threshold read off these quantiles would be set by how
 // long the log is.
 func TestScoresForEntriesIsIndependentOfPositionInTheHeldOutSet(t *testing.T) {
-	base := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
-	var entries []decisionlog.Entry
-	id := 0
-	for slot := 0; slot < 40; slot++ {
-		stamp := base.Add(time.Duration(slot) * 30 * time.Second).Format(time.RFC3339)
-		for k := 0; k < 12; k++ {
-			conn := fmt.Sprintf("c%d", id)
-			entries = append(entries,
-				decisionlog.Entry{Kind: decisionlog.KindDecision, ConnID: conn, Timestamp: stamp,
-					Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", Host: "github.com"},
-				decisionlog.Entry{Kind: decisionlog.KindFlow, ConnID: conn, Timestamp: stamp,
-					BytesUp: 1000, BytesDown: 2000, DurationMS: 8000})
-			id++
-		}
-	}
+	entries := burstyLog()
 
 	scores, infinite, unscorable := scoresForEntries(entries, 0.7)
 	if len(scores) < 20 || infinite != 0 || unscorable != 0 {
@@ -202,4 +174,73 @@ func TestScoresForEntriesIgnoresDeniedDecisionsWhenAdvancingLastSeen(t *testing.
 	if p50 > 1.0 {
 		t.Fatalf("p50 = %.3f for a perfectly regular pair; denials are advancing the replay's last-seen", p50)
 	}
+}
+
+// clouds.add sets cloud.last BEFORE its `!ok` return (cloud.go), so a decision
+// that never spliced — no flow record, connection still open — still advances
+// the cloud's inter-arrival reference. The replay must advance on the same
+// entries, which means advancing before the unscorable check, not after it.
+func TestScoresForEntriesAdvancesLastSeenOnConnectionsThatNeverSpliced(t *testing.T) {
+	base := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	var entries []decisionlog.Entry
+	for i := 0; i < 90; i++ {
+		at := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
+		conn := fmt.Sprintf("c%d", i)
+		entries = append(entries, decisionlog.Entry{
+			Kind: decisionlog.KindDecision, ConnID: conn, Timestamp: at,
+			Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", Host: "github.com",
+		})
+		// Every third connection is still open: a decision with no flow record.
+		if i%3 == 2 {
+			continue
+		}
+		entries = append(entries, decisionlog.Entry{
+			Kind: decisionlog.KindFlow, ConnID: conn, Timestamp: at,
+			BytesUp: 1000, BytesDown: 2000, DurationMS: 8000,
+		})
+	}
+
+	scores, _, _ := scoresForEntries(entries, 0.7)
+	if len(scores) == 0 {
+		t.Fatal("no held-out connection scored")
+	}
+	sorted := sortedCopy(scores)
+	p50 := quantile(sorted, 0.5)
+	t.Logf("one-minute pair, every third connection still open: p50=%.3f max=%.3f",
+		p50, sorted[len(sorted)-1])
+	// The gap is a steady 60s in the clouds. If the replay skipped the flowless
+	// connections it would see 120s across them and score a regular pair as
+	// drifting.
+	if p50 > 1.0 {
+		t.Fatalf("p50 = %.3f; the replay is not advancing last-seen on connections that never spliced", p50)
+	}
+	// The tail separates the two behaviours much more sharply than the median:
+	// skipping the flowless connections roughly doubles p50 but quintuples the
+	// worst case, because the skipped gaps compound across consecutive ones.
+	if worst := sorted[len(sorted)-1]; worst > 3.0 {
+		t.Fatalf("worst held-out distance = %.3f for a steady one-minute pair", worst)
+	}
+}
+
+// burstyLog is 40 slots 30 seconds apart, each a burst of 12 identical
+// connections to the same pair. Every connection matches its own history in
+// every dimension, so any distance a calibration reports on it comes from the
+// replay's own bookkeeping rather than from the traffic.
+func burstyLog() []decisionlog.Entry {
+	base := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	var entries []decisionlog.Entry
+	id := 0
+	for slot := 0; slot < 40; slot++ {
+		stamp := base.Add(time.Duration(slot) * 30 * time.Second).Format(time.RFC3339)
+		for k := 0; k < 12; k++ {
+			conn := fmt.Sprintf("c%d", id)
+			entries = append(entries,
+				decisionlog.Entry{Kind: decisionlog.KindDecision, ConnID: conn, Timestamp: stamp,
+					Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", Comm: "git", Host: "github.com"},
+				decisionlog.Entry{Kind: decisionlog.KindFlow, ConnID: conn, Timestamp: stamp,
+					BytesUp: 1000, BytesDown: 2000, DurationMS: 8000})
+			id++
+		}
+	}
+	return entries
 }

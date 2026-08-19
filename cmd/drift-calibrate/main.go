@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
@@ -72,25 +71,34 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 	// preceded it rather than against nothing.
 	lastSeen := map[string]time.Time{}
 	for _, item := range joined[:cut] {
+		if !drift.FoldsIntoBaseline(item.Decision) {
+			continue
+		}
 		if at, err := time.Parse(time.RFC3339, item.Decision.Timestamp); err == nil {
-			lastSeen[pairKeyOf(item.Decision)] = at
+			lastSeen[drift.BaselinePairKey(item.Decision)] = at
 		}
 	}
 	for _, item := range joined[cut:] {
 		identity := drift.IdentityFromEntry(item.Decision)
-		key := pairKeyOf(item.Decision)
+		key := drift.BaselinePairKey(item.Decision)
 		at, err := time.Parse(time.RFC3339, item.Decision.Timestamp)
 		if err != nil {
 			unscorable++
 			continue
 		}
+		// Advance last-seen only for the entries that built the clouds. A denial
+		// contributes no point, so it must not become the reference the next
+		// connection's inter-arrival is measured from.
+		folds := drift.FoldsIntoBaseline(item.Decision)
 		// Walk forward on both derived dimensions at once: inter-arrival against
 		// the previous connection for this pair as the replay has seen it so
 		// far, concurrency at this same instant. One parse serves both, so they
 		// cannot disagree about when this connection happened.
 		score := baseline.ScoreAgainst(identity, item.Decision.Host, item,
 			lastSeen[key], index.At(at, item.Decision.ConnID))
-		lastSeen[key] = at
+		if folds {
+			lastSeen[key] = at
+		}
 		if !score.Scored {
 			unscorable++
 			continue
@@ -102,19 +110,6 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 		scores = append(scores, score.Distance)
 	}
 	return scores, infinite, unscorable
-}
-
-// pairKeyOf follows drift's identity and host bucketing so the replay's
-// last-seen state advances for exactly the pair whose cloud is being scored.
-// It mirrors identityKey/hostKey/pairKey in internal/drift; those are
-// unexported, and a mismatch would silently bucket the replay differently
-// from the clouds it scores against.
-func pairKeyOf(decision decisionlog.Entry) string {
-	id := drift.IdentityFromEntry(decision)
-	return strings.Join([]string{
-		id.ExePath, id.ExeSHA256, id.TeamID, id.ExeBasename,
-		strings.ToLower(decision.Host),
-	}, "\x00")
 }
 
 func quantile(sorted []float64, q float64) float64 {

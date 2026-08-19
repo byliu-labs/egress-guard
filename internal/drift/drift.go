@@ -112,7 +112,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 	var latest time.Time
 
 	for _, e := range entries {
-		if !foldsIntoBaseline(e) {
+		if !FoldsIntoBaseline(e) {
 			continue
 		}
 		id := identityKey(IdentityFromEntry(e))
@@ -144,7 +144,7 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 	concurrency := decisionlog.BuildConcurrencyIndex(joined)
 	b.clouds = newClouds()
 	for _, joined := range joined {
-		if !foldsIntoBaseline(joined.Decision) {
+		if !FoldsIntoBaseline(joined.Decision) {
 			continue
 		}
 		identity := IdentityFromEntry(joined.Decision)
@@ -154,8 +154,20 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 	return b
 }
 
-func foldsIntoBaseline(e decisionlog.Entry) bool {
+// FoldsIntoBaseline reports whether an entry contributes a point to a cloud.
+// Anything replaying the log to reproduce cloud geometry — drift-calibrate,
+// notably — must ask this rather than reimplement it: a replay that counts
+// denials measures an inter-arrival the clouds never saw.
+func FoldsIntoBaseline(e decisionlog.Entry) bool {
 	return !e.IsFlow() && e.Decision != decisionlog.DecisionDeny
+}
+
+// BaselinePairKey returns the cloud bucket a decision belongs to. Exported for
+// the same reason as FoldsIntoBaseline: the identity and host bucketing is an
+// invariant of this package, and a caller that copies it silently diverges the
+// day the bucketing changes.
+func BaselinePairKey(e decisionlog.Entry) string {
+	return pairKey(identityKey(IdentityFromEntry(e)), hostKey(e.Host))
 }
 
 // Classify scores one decision-log entry against the baseline. It ignores the
@@ -226,8 +238,15 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 
 // ScoreAgainst scores one completed connection using an explicitly supplied
 // previous-connection time. A replaying caller must advance that reference as
-// it walks its held-out history; using the baseline's frozen last-seen value
-// makes inter-arrival distance grow with file position.
+// it walks its held-out history, over the entries FoldsIntoBaseline accepts;
+// using the baseline's frozen last-seen makes inter-arrival distance grow with
+// file position instead.
+//
+// The daemon does NOT do this: it scores through ScoreLive against a baseline
+// rebuilt on an hourly ticker, so its own inter-arrival reference is frozen
+// within each window. A caller reading a threshold off replayed quantiles is
+// therefore reading it off the clouds' geometry, not off what the daemon will
+// measure at minute 59.
 func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
 	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {
@@ -282,7 +301,7 @@ func (b *Baseline) BuiltThrough() time.Time {
 // IsStale reports whether entries contain traffic newer than this baseline.
 func (b *Baseline) IsStale(entries []decisionlog.Entry) bool {
 	for _, e := range entries {
-		if !foldsIntoBaseline(e) {
+		if !FoldsIntoBaseline(e) {
 			continue
 		}
 		ts, err := time.Parse(time.RFC3339, e.Timestamp)
