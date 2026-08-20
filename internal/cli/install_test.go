@@ -1,9 +1,85 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestInstallProtection_DaemonFailureLeavesKernelUntouched(t *testing.T) {
+	var events []string
+	err := installProtection(8443,
+		daemonInstaller{install: func(int) error {
+			events = append(events, "daemon")
+			return errors.New("bootstrap failed")
+		}},
+		kernelInstaller{install: func(int) error {
+			events = append(events, "kernel")
+			return nil
+		}},
+		daemonUninstaller{uninstall: func() error {
+			events = append(events, "rollback")
+			return nil
+		}},
+		false,
+	)
+	if err == nil {
+		t.Fatal("installProtection succeeded, want daemon failure")
+	}
+	if strings.Join(events, ",") != "daemon" {
+		t.Fatalf("events = %v, want only daemon before a failed bootstrap", events)
+	}
+}
+
+func TestInstallProtection_RollsBackDaemonWhenKernelFails(t *testing.T) {
+	var events []string
+	err := installProtection(8443,
+		daemonInstaller{install: func(int) error {
+			events = append(events, "daemon")
+			return nil
+		}},
+		kernelInstaller{install: func(int) error {
+			events = append(events, "kernel")
+			return errors.New("pf failed")
+		}},
+		daemonUninstaller{uninstall: func() error {
+			events = append(events, "rollback")
+			return nil
+		}},
+		false,
+	)
+	if err == nil {
+		t.Fatal("installProtection succeeded, want kernel failure")
+	}
+	if strings.Join(events, ",") != "daemon,kernel,rollback" {
+		t.Fatalf("events = %v, want daemon,kernel,rollback", events)
+	}
+}
+
+func TestInstallProtection_PreservesExistingDaemonWhenKernelFails(t *testing.T) {
+	var events []string
+	err := installProtection(8443,
+		daemonInstaller{install: func(int) error {
+			events = append(events, "daemon")
+			return nil
+		}},
+		kernelInstaller{install: func(int) error {
+			events = append(events, "kernel")
+			return errors.New("pf failed")
+		}},
+		daemonUninstaller{uninstall: func() error {
+			events = append(events, "rollback")
+			return nil
+		}},
+		true,
+	)
+	if err == nil {
+		t.Fatal("installProtection succeeded, want kernel failure")
+	}
+	if strings.Join(events, ",") != "daemon,kernel" {
+		t.Fatalf("events = %v, want existing daemon preserved", events)
+	}
+}
 
 // stubEuid temporarily replaces getEuid for the duration of the test. Pattern
 // mirrors userCurrent in daemon_test.go.
@@ -22,6 +98,36 @@ func TestInstall_RefusesNonRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sudo") {
 		t.Errorf("error %q should tell user to re-run with sudo", err)
+	}
+}
+
+func TestInstall_PassesBootDaemonProbeToProtection(t *testing.T) {
+	stubEuid(t, 0)
+	for _, tc := range []struct {
+		name      string
+		installed bool
+	}{
+		{name: "fresh install", installed: false},
+		{name: "reinstall", installed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubBootDaemonInstalled(t, tc.installed)
+			previous := installProtectionFn
+			t.Cleanup(func() { installProtectionFn = previous })
+
+			var gotHadPrevious bool
+			installProtectionFn = func(_ int, _ daemonInstaller, _ kernelInstaller, _ daemonUninstaller, hadPrevious bool) error {
+				gotHadPrevious = hadPrevious
+				return errors.New("stop after capturing install probe")
+			}
+
+			if err := Install(nil); err == nil {
+				t.Fatal("Install succeeded, want protection stub error")
+			}
+			if gotHadPrevious != tc.installed {
+				t.Errorf("hadPrevious = %v, want %v", gotHadPrevious, tc.installed)
+			}
+		})
 	}
 }
 

@@ -15,6 +15,39 @@ const defaultRedirectPort = 8443
 // reassigns it.
 var getEuid = os.Geteuid
 
+// Keep the two installers in distinct wrappers: both functions accept a port,
+// so passing them positionally would otherwise compile after an accidental
+// swap.
+type daemonInstaller struct {
+	install func(int) error
+}
+
+type kernelInstaller struct {
+	install func(int) error
+}
+
+type daemonUninstaller struct {
+	uninstall func() error
+}
+
+func installProtection(port int, daemon daemonInstaller, kernel kernelInstaller, uninstall daemonUninstaller, hadPrevious bool) error {
+	if err := daemon.install(port); err != nil {
+		return fmt.Errorf("install boot-resident daemon: %w", err)
+	}
+	if err := kernel.install(port); err != nil {
+		if hadPrevious {
+			return fmt.Errorf("install kernel rules: %w", err)
+		}
+		if rollbackErr := uninstall.uninstall(); rollbackErr != nil {
+			return fmt.Errorf("install kernel rules: %w (daemon rollback: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("install kernel rules: %w", err)
+	}
+	return nil
+}
+
+var installProtectionFn = installProtection
+
 // Install writes the platform kernel rules and installs the boot-resident
 // System-domain LaunchDaemon. Requires root.
 func Install(args []string) error {
@@ -26,11 +59,13 @@ func Install(args []string) error {
 		return fmt.Errorf("install requires root: re-run with sudo")
 	}
 	k := kernel.Default()
-	if err := k.Install(*port); err != nil {
+	if err := installProtectionFn(*port,
+		daemonInstaller{install: installLaunchDaemon},
+		kernelInstaller{install: k.Install},
+		daemonUninstaller{uninstall: uninstallLaunchDaemon},
+		BootDaemonInstalled(),
+	); err != nil {
 		return err
-	}
-	if err := installLaunchDaemon(*port); err != nil {
-		return fmt.Errorf("install boot-resident daemon: %w", err)
 	}
 	fmt.Printf("egress-guard: kernel rules installed (redirect 443 -> 127.0.0.1:%d)\n", *port)
 	fmt.Println("egress-guard: boot-resident daemon installed (starts at boot, before login)")
