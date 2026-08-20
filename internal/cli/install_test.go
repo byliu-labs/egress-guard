@@ -9,18 +9,19 @@ import (
 func TestInstallProtection_DaemonFailureLeavesKernelUntouched(t *testing.T) {
 	var events []string
 	err := installProtection(8443,
-		func(int) error {
+		daemonInstaller{install: func(int) error {
 			events = append(events, "daemon")
 			return errors.New("bootstrap failed")
-		},
-		func(int) error {
+		}},
+		kernelInstaller{install: func(int) error {
 			events = append(events, "kernel")
 			return nil
-		},
-		func() error {
+		}},
+		daemonUninstaller{uninstall: func() error {
 			events = append(events, "rollback")
 			return nil
-		},
+		}},
+		false,
 	)
 	if err == nil {
 		t.Fatal("installProtection succeeded, want daemon failure")
@@ -33,24 +34,50 @@ func TestInstallProtection_DaemonFailureLeavesKernelUntouched(t *testing.T) {
 func TestInstallProtection_RollsBackDaemonWhenKernelFails(t *testing.T) {
 	var events []string
 	err := installProtection(8443,
-		func(int) error {
+		daemonInstaller{install: func(int) error {
 			events = append(events, "daemon")
 			return nil
-		},
-		func(int) error {
+		}},
+		kernelInstaller{install: func(int) error {
 			events = append(events, "kernel")
 			return errors.New("pf failed")
-		},
-		func() error {
+		}},
+		daemonUninstaller{uninstall: func() error {
 			events = append(events, "rollback")
 			return nil
-		},
+		}},
+		false,
 	)
 	if err == nil {
 		t.Fatal("installProtection succeeded, want kernel failure")
 	}
 	if strings.Join(events, ",") != "daemon,kernel,rollback" {
 		t.Fatalf("events = %v, want daemon,kernel,rollback", events)
+	}
+}
+
+func TestInstallProtection_PreservesExistingDaemonWhenKernelFails(t *testing.T) {
+	var events []string
+	err := installProtection(8443,
+		daemonInstaller{install: func(int) error {
+			events = append(events, "daemon")
+			return nil
+		}},
+		kernelInstaller{install: func(int) error {
+			events = append(events, "kernel")
+			return errors.New("pf failed")
+		}},
+		daemonUninstaller{uninstall: func() error {
+			events = append(events, "rollback")
+			return nil
+		}},
+		true,
+	)
+	if err == nil {
+		t.Fatal("installProtection succeeded, want kernel failure")
+	}
+	if strings.Join(events, ",") != "daemon,kernel" {
+		t.Fatalf("events = %v, want existing daemon preserved", events)
 	}
 }
 
