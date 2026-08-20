@@ -249,7 +249,10 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 //
 // The daemon captures the prior reference and advances its own live per-pair
 // state when an accepted connection is admitted to the splice, so overlapping
-// connections and replayed decisions use the same geometry.
+// connections and replayed decisions use the same geometry while the daemon's
+// 4096-pair live cap retains the pair. The calibrator's replay map is
+// unbounded; above that cap the daemon scores an evicted pair as first-contact
+// using unknownInterArrivalSeconds while replay retains its previous time.
 func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
 	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {

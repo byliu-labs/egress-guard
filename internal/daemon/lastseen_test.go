@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -20,17 +21,46 @@ func TestLastSeen_AdvanceIsMonotonic(t *testing.T) {
 	}
 }
 
-func TestLastSeen_EvictsOldestBeyondTheCap(t *testing.T) {
+func TestLastSeen_EvictsLeastRecentlyAdvancedBeyondTheCap(t *testing.T) {
 	l := newLastSeen(2)
 	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	l.advance("a", base)
-	l.advance("b", base.Add(time.Minute))
-	l.advance("c", base.Add(2*time.Minute))
+	l.advance("a", base.Add(10*time.Minute))
+	l.advance("b", base)
+	l.advance("c", base.Add(20*time.Minute))
 	if got := l.at("a"); !got.IsZero() {
-		t.Errorf("a survived eviction: %v", got)
+		t.Errorf("least-recently-advanced pair a survived eviction: %v", got)
 	}
 	if got := l.at("c"); got.IsZero() {
 		t.Error("c was evicted instead of a")
+	}
+}
+
+func TestLastSeen_SeedingBeyondCapacityStaysBounded(t *testing.T) {
+	l := newLastSeen(4096)
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	started := time.Now()
+	for i := 0; i < 20_000; i++ {
+		l.advance(strconv.Itoa(i), base.Add(time.Duration(i)*time.Second))
+	}
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("advancing 20,000 pairs took %v; eviction is too expensive", elapsed)
+	}
+}
+
+func TestLastSeen_CountsEvictions(t *testing.T) {
+	l := newLastSeen(2)
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	if got := l.evictionCount(); got != 0 {
+		t.Fatalf("evictions after construction = %d, want 0", got)
+	}
+	l.advance("a", base)
+	l.advance("b", base.Add(time.Minute))
+	if got := l.evictionCount(); got != 0 {
+		t.Fatalf("evictions at capacity = %d, want 0", got)
+	}
+	l.advance("c", base.Add(2*time.Minute))
+	if got := l.evictionCount(); got != 1 {
+		t.Fatalf("evictions after exceeding capacity = %d, want 1", got)
 	}
 }
 

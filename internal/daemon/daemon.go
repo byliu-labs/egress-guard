@@ -111,6 +111,8 @@ type Daemon struct {
 	mu       sync.Mutex
 	hasher   *procid.ExeHasher
 	inflight *inflight
+	// lastSeen is written once in New and read from every connection goroutine;
+	// SetBaseline must never replace it after construction.
 	lastSeen *lastSeen
 	// onCompletedScore is an in-memory observer for completed-flow scoring.
 	// Production leaves it nil; it never affects admission or persistence.
@@ -147,10 +149,10 @@ func New(opts Options) (*Daemon, error) {
 // Safe to call from a background refresher while connection goroutines classify.
 // The baseline is observe-only enrichment: swapping it never changes allow/deny.
 func (d *Daemon) SetBaseline(b *drift.Baseline) {
-	if d.lastSeen == nil {
-		d.lastSeen = newLastSeen(maxLiveLastSeenPairs)
-	}
 	d.lastSeen.seed(b)
+	if evictions := d.lastSeen.evictionCount(); evictions > 0 && d.opts.Logger != nil {
+		d.opts.Logger.Errorf("drift: live last-seen evicted %d pair(s); replay history is unbounded", evictions)
+	}
 	d.baseline.Store(b)
 }
 
