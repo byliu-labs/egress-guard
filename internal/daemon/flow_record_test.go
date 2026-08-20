@@ -100,6 +100,75 @@ func TestAllowedConnection_AdvancesLiveReferenceAtDecisionTime(t *testing.T) {
 	}
 }
 
+func TestOverlappingConnectionsAdvanceBeforeEitherSplices(t *testing.T) {
+	const host = "allow.example"
+	hello := spoofedClientHello(host)
+	_, _, dl, d, fk, procIDStub, cancel := newFlowRecordDaemon(t, allowlist.Layer{Allow: []string{host}})
+	defer cancel()
+	defer dl.Close()
+
+	type spliceGate struct {
+		ready   chan struct{}
+		release chan struct{}
+	}
+	gates := make(chan *spliceGate, 2)
+	d.dial = func(string, string) (net.Conn, error) {
+		server, client := net.Pipe()
+		gate := &spliceGate{ready: make(chan struct{}), release: make(chan struct{})}
+		gates <- gate
+		go func() {
+			defer server.Close()
+			if _, err := io.ReadFull(server, make([]byte, len(hello))); err != nil {
+				return
+			}
+			close(gate.ready)
+			<-gate.release
+		}()
+		return client, nil
+	}
+
+	done := make(chan struct{}, 2)
+	clients := make([]net.Conn, 0, 2)
+	for i := 0; i < 2; i++ {
+		client, server := net.Pipe()
+		clients = append(clients, client)
+		fk.setOrig(client.LocalAddr().String(), net.ParseIP("127.0.0.1"), 443)
+		procIDStub.Set(client.LocalAddr().String(), procid.ProcInfo{PID: 4242, Exe: "/usr/bin/curl", Comm: "curl"})
+		go func(server net.Conn) {
+			d.handle(server)
+			done <- struct{}{}
+		}(server)
+		go func(client net.Conn) { _, _ = client.Write(hello) }(client)
+	}
+
+	first, second := <-gates, <-gates
+	<-first.ready
+	<-second.ready
+
+	_, hash, err := d.hasher.Hash("/usr/bin/curl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := drift.BaselinePairKey(decisionlog.Entry{
+		Exe: "/usr/bin/curl", ExeSHA256: hash, TeamID: "TESTTEAM", Host: host,
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for d.lastSeen.at(key).IsZero() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := d.lastSeen.at(key); got.IsZero() {
+		t.Fatal("overlapping accepted connections did not advance before splice")
+	}
+	close(first.release)
+	close(second.release)
+	for _, client := range clients {
+		_ = client.Close()
+	}
+	for i := 0; i < 2; i++ {
+		<-done
+	}
+}
+
 func TestAllowedConnection_ScoresCompletedFlowWithCapturedConcurrency(t *testing.T) {
 	scores := make(chan drift.Event, 1)
 	logPath, _, d := runAllowedConnectionWithDaemon(t, 512, func(d *Daemon) {
