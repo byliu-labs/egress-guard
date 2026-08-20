@@ -16,9 +16,10 @@ func TestGlyph(t *testing.T) {
 		wantTitle string
 	}{
 		{"protected", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 42}, "🛡️"},
+		{"supported-user-agent", cli.StatusReport{AgentLoaded: true, DaemonPID: 42}, "🛡️"},
 		{"tun-bypass-wins", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, TUNIface: "utun4"}, "⚠️"},
 		{"daemon-restarting", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 0}, "⚠️"},
-		{"retired-user-agent-is-not-protected", cli.StatusReport{AgentLoaded: true, DaemonPID: 42}, "⛔"},
+		{"user-agent-restarting", cli.StatusReport{AgentLoaded: true}, "⚠️"},
 		{"not-protected", cli.StatusReport{}, "⛔"},
 	}
 	for _, c := range cases {
