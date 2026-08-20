@@ -1,9 +1,58 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestInstallProtection_DaemonFailureLeavesKernelUntouched(t *testing.T) {
+	var events []string
+	err := installProtection(8443,
+		func(int) error {
+			events = append(events, "daemon")
+			return errors.New("bootstrap failed")
+		},
+		func(int) error {
+			events = append(events, "kernel")
+			return nil
+		},
+		func() error {
+			events = append(events, "rollback")
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("installProtection succeeded, want daemon failure")
+	}
+	if strings.Join(events, ",") != "daemon" {
+		t.Fatalf("events = %v, want only daemon before a failed bootstrap", events)
+	}
+}
+
+func TestInstallProtection_RollsBackDaemonWhenKernelFails(t *testing.T) {
+	var events []string
+	err := installProtection(8443,
+		func(int) error {
+			events = append(events, "daemon")
+			return nil
+		},
+		func(int) error {
+			events = append(events, "kernel")
+			return errors.New("pf failed")
+		},
+		func() error {
+			events = append(events, "rollback")
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("installProtection succeeded, want kernel failure")
+	}
+	if strings.Join(events, ",") != "daemon,kernel,rollback" {
+		t.Fatalf("events = %v, want daemon,kernel,rollback", events)
+	}
+}
 
 // stubEuid temporarily replaces getEuid for the duration of the test. Pattern
 // mirrors userCurrent in daemon_test.go.

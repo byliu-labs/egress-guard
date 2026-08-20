@@ -112,6 +112,29 @@ func rollbackLaunchDaemonPlist(path string, previous []byte, hadPrevious bool) e
 	return nil
 }
 
+func installLaunchDaemonPlist(path string, plist []byte, bootout func() error, bootstrap func(string) ([]byte, error)) error {
+	_, statErr := os.Stat(path)
+	hadPrevious := statErr == nil
+	bootoutErr := bootout()
+	if err := writeAndBootstrapLaunchDaemonPlist(path, plist, bootstrap); err != nil {
+		if hadPrevious && bootoutErr == nil {
+			if _, restartErr := bootstrap(path); restartErr != nil {
+				return fmt.Errorf("%w (restore daemon: %v)", err, restartErr)
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+var launchctlBootout = func() error {
+	return exec.Command("launchctl", "bootout", "system/"+launchDaemonLabel).Run()
+}
+
+var launchctlBootstrap = func(path string) ([]byte, error) {
+	return exec.Command("launchctl", "bootstrap", "system", path).CombinedOutput()
+}
+
 func installLaunchDaemon(port int) error {
 	binPath, err := os.Executable()
 	if err != nil {
@@ -130,13 +153,11 @@ func installLaunchDaemon(port int) error {
 	if err := os.MkdirAll(filepath.Dir(launchDaemonPlistPath), 0o755); err != nil {
 		return fmt.Errorf("launchdaemon: create %s: %w", filepath.Dir(launchDaemonPlistPath), err)
 	}
-	exec.Command("launchctl", "bootout", "system/"+launchDaemonLabel).Run()
-	return writeAndBootstrapLaunchDaemonPlist(
+	return installLaunchDaemonPlist(
 		launchDaemonPlistPath,
 		[]byte(plist),
-		func(path string) ([]byte, error) {
-			return exec.Command("launchctl", "bootstrap", "system", path).CombinedOutput()
-		},
+		launchctlBootout,
+		launchctlBootstrap,
 	)
 }
 

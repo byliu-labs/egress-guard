@@ -15,6 +15,19 @@ const defaultRedirectPort = 8443
 // reassigns it.
 var getEuid = os.Geteuid
 
+func installProtection(port int, installDaemon func(int) error, installKernel func(int) error, uninstallDaemon func() error) error {
+	if err := installDaemon(port); err != nil {
+		return fmt.Errorf("install boot-resident daemon: %w", err)
+	}
+	if err := installKernel(port); err != nil {
+		if rollbackErr := uninstallDaemon(); rollbackErr != nil {
+			return fmt.Errorf("install kernel rules: %w (daemon rollback: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("install kernel rules: %w", err)
+	}
+	return nil
+}
+
 // Install writes the platform kernel rules and installs the boot-resident
 // System-domain LaunchDaemon. Requires root.
 func Install(args []string) error {
@@ -26,11 +39,8 @@ func Install(args []string) error {
 		return fmt.Errorf("install requires root: re-run with sudo")
 	}
 	k := kernel.Default()
-	if err := k.Install(*port); err != nil {
+	if err := installProtection(*port, installLaunchDaemon, k.Install, uninstallLaunchDaemon); err != nil {
 		return err
-	}
-	if err := installLaunchDaemon(*port); err != nil {
-		return fmt.Errorf("install boot-resident daemon: %w", err)
 	}
 	fmt.Printf("egress-guard: kernel rules installed (redirect 443 -> 127.0.0.1:%d)\n", *port)
 	fmt.Println("egress-guard: boot-resident daemon installed (starts at boot, before login)")

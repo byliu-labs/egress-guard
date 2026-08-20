@@ -59,6 +59,11 @@ var launchctlPrintDisabled = func() (output string, err error) {
 	return string(out), err
 }
 
+func launchDaemonDisabled(output string) bool {
+	label := `"` + launchDaemonLabel + `" => `
+	return strings.Contains(output, label+"disabled") || strings.Contains(output, label+"true")
+}
+
 // pidLineRe matches the `"PID" = 12345;` line in launchctl's plist-style
 // dump. The line is absent when the agent is loaded but not currently
 // running, which is how we distinguish "ENABLED but daemon down" from
@@ -107,7 +112,7 @@ func checkDaemonJob() agentState {
 	if err != nil {
 		return agentState{Unknown: true}
 	}
-	if strings.Contains(disabled, `"`+launchDaemonLabel+`" => true`) {
+	if launchDaemonDisabled(disabled) {
 		return agentState{Disabled: true}
 	}
 	return agentState{}
