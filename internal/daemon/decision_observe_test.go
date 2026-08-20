@@ -11,6 +11,7 @@ import (
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+	"github.com/byliu-labs/egress-guard/internal/drift"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
@@ -168,6 +169,55 @@ func TestHandle_ObserveOnlyKeepsObserveDecisionOnDialFailure(t *testing.T) {
 	}
 	if !strings.HasPrefix(got.Reason, "net_error: upstream_dial_failed after host_denylisted:") {
 		t.Errorf("Reason = %q, want net_error preserving policy reason", got.Reason)
+	}
+	at, err := time.Parse(time.RFC3339, got.Timestamp)
+	if err != nil {
+		t.Fatalf("decision timestamp: %v", err)
+	}
+	if live := d.lastSeen.at(drift.BaselinePairKey(got)); !live.Equal(at) {
+		t.Errorf("flowless accepted decision advanced reference to %v, want %v", live, at)
+	}
+}
+
+func TestHandle_ObserveOnlyAdvancesReferenceOnReplayWriteFailure(t *testing.T) {
+	host := "allow.example"
+	ctx, logPath, dl, d, fk, procIDStub, cancel := newFlowRecordDaemon(t, allowlist.Layer{Allow: []string{host}})
+	defer cancel()
+	defer dl.Close()
+	d.opts.ObserveOnly = true
+	d.dial = func(string, string) (net.Conn, error) {
+		left, right := net.Pipe()
+		_ = right.Close()
+		return writeFailConn{Conn: left}, nil
+	}
+	go d.Run(ctx)
+	addr := d.WaitListen()
+	procIDStub.Set(addr.String(), procid.ProcInfo{PID: 4242, Exe: "/usr/bin/curl", Comm: "curl"})
+
+	conn, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatalf("dial daemon: %v", err)
+	}
+	fk.setOrig(conn.LocalAddr().String(), net.ParseIP("127.0.0.1"), 443)
+	if _, err := conn.Write(spoofedClientHello(host)); err != nil {
+		t.Fatalf("write ClientHello: %v", err)
+	}
+	waitForDecisionEntry(t, logPath)
+	_ = conn.Close()
+
+	entries, err := decisionlog.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Decision != decisionlog.DecisionObserve {
+		t.Fatalf("entries = %+v, want one observe decision", entries)
+	}
+	at, err := time.Parse(time.RFC3339, entries[0].Timestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live := d.lastSeen.at(drift.BaselinePairKey(entries[0])); !live.Equal(at) {
+		t.Errorf("write-failure reference = %v, want %v", live, at)
 	}
 }
 

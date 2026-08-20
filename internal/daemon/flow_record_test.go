@@ -74,6 +74,101 @@ func TestAllowedConnection_WritesCorrelatedFlowRecord(t *testing.T) {
 	}
 }
 
+func TestAllowedConnection_AdvancesLiveReferenceAtDecisionTime(t *testing.T) {
+	logPath, _, d := runAllowedConnectionWithDaemon(t, 512, nil)
+	entries, err := decisionlog.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decision decisionlog.Entry
+	for _, entry := range entries {
+		if !entry.IsFlow() {
+			decision = entry
+			break
+		}
+	}
+	if decision.ConnID == "" {
+		t.Fatalf("entries = %+v, want a decision entry", entries)
+	}
+	want, err := time.Parse(time.RFC3339, decision.Timestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.lastSeen.at(drift.BaselinePairKey(decision))
+	if !got.Equal(want) {
+		t.Fatalf("live reference = %v, want decision timestamp %v", got, want)
+	}
+}
+
+func TestOverlappingConnectionsAdvanceBeforeEitherSplices(t *testing.T) {
+	const host = "allow.example"
+	hello := spoofedClientHello(host)
+	_, _, dl, d, fk, procIDStub, cancel := newFlowRecordDaemon(t, allowlist.Layer{Allow: []string{host}})
+	defer cancel()
+	defer dl.Close()
+
+	type spliceGate struct {
+		ready   chan struct{}
+		release chan struct{}
+	}
+	gates := make(chan *spliceGate, 2)
+	d.dial = func(string, string) (net.Conn, error) {
+		server, client := net.Pipe()
+		gate := &spliceGate{ready: make(chan struct{}), release: make(chan struct{})}
+		gates <- gate
+		go func() {
+			defer server.Close()
+			if _, err := io.ReadFull(server, make([]byte, len(hello))); err != nil {
+				return
+			}
+			close(gate.ready)
+			<-gate.release
+		}()
+		return client, nil
+	}
+
+	done := make(chan struct{}, 2)
+	clients := make([]net.Conn, 0, 2)
+	for i := 0; i < 2; i++ {
+		client, server := net.Pipe()
+		clients = append(clients, client)
+		fk.setOrig(client.LocalAddr().String(), net.ParseIP("127.0.0.1"), 443)
+		procIDStub.Set(client.LocalAddr().String(), procid.ProcInfo{PID: 4242, Exe: "/usr/bin/curl", Comm: "curl"})
+		go func(server net.Conn) {
+			d.handle(server)
+			done <- struct{}{}
+		}(server)
+		go func(client net.Conn) { _, _ = client.Write(hello) }(client)
+	}
+
+	first, second := <-gates, <-gates
+	<-first.ready
+	<-second.ready
+
+	_, hash, err := d.hasher.Hash("/usr/bin/curl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := drift.BaselinePairKey(decisionlog.Entry{
+		Exe: "/usr/bin/curl", ExeSHA256: hash, TeamID: "TESTTEAM", Host: host,
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for d.lastSeen.at(key).IsZero() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := d.lastSeen.at(key); got.IsZero() {
+		t.Fatal("overlapping accepted connections did not advance before splice")
+	}
+	close(first.release)
+	close(second.release)
+	for _, client := range clients {
+		_ = client.Close()
+	}
+	for i := 0; i < 2; i++ {
+		<-done
+	}
+}
+
 func TestAllowedConnection_ScoresCompletedFlowWithCapturedConcurrency(t *testing.T) {
 	scores := make(chan drift.Event, 1)
 	logPath, _, d := runAllowedConnectionWithDaemon(t, 512, func(d *Daemon) {
@@ -117,6 +212,60 @@ func TestAllowedConnection_ScoresCompletedFlowWithCapturedConcurrency(t *testing
 	if scored.Score.Distance <= withoutConcurrency.Score.Distance {
 		t.Fatalf("captured concurrency did not affect score: with=%v without=%v", scored.Score.Distance, withoutConcurrency.Score.Distance)
 	}
+}
+
+func TestCompletedFlow_SteadyPairDoesNotDriftWithinTheRefreshWindow(t *testing.T) {
+	scoreAt := func(offset time.Duration) float64 {
+		var got drift.Event
+		runAllowedConnectionWithDaemon(t, 512, func(d *Daemon) {
+			_, hash, err := d.hasher.Hash("/usr/bin/curl")
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline := drift.BuildBaseline(&catalog.Catalog{}, steadyPairHistory(hash, 60*time.Second, 40))
+			d.SetBaseline(baseline)
+			d.now = func() time.Time { return steadyPairEnd.Add(offset) }
+			if offset > time.Minute {
+				key := drift.BaselinePairKey(decisionlog.Entry{Exe: "/usr/bin/curl", ExeSHA256: hash, TeamID: "TESTTEAM", Host: "allow.example"})
+				d.lastSeen.advance(key, steadyPairEnd.Add(offset-time.Minute))
+			}
+			d.onCompletedScore = func(ev drift.Event) { got = ev }
+		})
+		if !got.Score.Scored {
+			t.Fatalf("offset %s: not scored", offset)
+		}
+		return got.Score.Distance
+	}
+
+	early, late := scoreAt(time.Minute), scoreAt(59*time.Minute)
+	t.Logf("steady pair: +1min=%.3f +59min=%.3f", early, late)
+	if late > 4.0 {
+		t.Fatalf("+1min scored %.3f, +59min scored %.3f: distance tracks the refresh window, not the traffic", early, late)
+	}
+}
+
+var steadyPairEnd = time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+
+func steadyPairHistory(hash string, cadence time.Duration, count int) []decisionlog.Entry {
+	start := steadyPairEnd.Add(-time.Duration(count-1) * cadence)
+	entries := make([]decisionlog.Entry, 0, count*2)
+	for i := 0; i < count; i++ {
+		ts := start.Add(time.Duration(i) * cadence).Format(time.RFC3339)
+		connID := "steady-" + strconv.Itoa(i)
+		entries = append(entries,
+			decisionlog.Entry{
+				Kind: decisionlog.KindDecision, ConnID: connID, Timestamp: ts,
+				Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl",
+				ExeSHA256: hash, TeamID: "TESTTEAM", SigValid: true,
+				Host: "allow.example",
+			},
+			decisionlog.Entry{
+				Kind: decisionlog.KindFlow, ConnID: connID, BytesUp: 512,
+				BytesDown: 128, DurationMS: 0,
+			},
+		)
+	}
+	return entries
 }
 
 func TestDeniedConnection_WritesNoFlowRecord(t *testing.T) {

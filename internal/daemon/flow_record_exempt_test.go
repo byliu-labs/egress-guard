@@ -5,9 +5,11 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/allowlist"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
+	"github.com/byliu-labs/egress-guard/internal/drift"
 	"github.com/byliu-labs/egress-guard/internal/exempt"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/signature"
@@ -92,6 +94,13 @@ func TestExemptConnection_WritesExactlyOneFlowRecord(t *testing.T) {
 
 	if decision.Reason != "exempt_app" {
 		t.Errorf("decision reason = %q, want exempt_app", decision.Reason)
+	}
+	at, err := time.Parse(time.RFC3339, decision.Timestamp)
+	if err != nil {
+		t.Fatalf("decision timestamp: %v", err)
+	}
+	if live := d.lastSeen.at(drift.BaselinePairKey(decision)); !live.Equal(at) {
+		t.Errorf("exempt connection reference = %v, want %v", live, at)
 	}
 	if decision.ConnID == "" {
 		t.Fatal("exempt decision record has no conn_id; its flow record cannot be correlated")

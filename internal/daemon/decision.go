@@ -64,7 +64,7 @@ func (d *Daemon) entryForWithoutPersistenceNoHash(decision decisionlog.Decision,
 
 func (d *Daemon) entryForWithoutPersistenceWithHash(decision decisionlog.Decision, reason, host string, pi procid.ProcInfo, sig signature.SignedIdentity, tier decisionlog.TrustTier, includeHash bool) decisionlog.Entry {
 	entry := decisionlog.Entry{
-		Timestamp: timeNow().UTC().Format(time.RFC3339),
+		Timestamp: d.nowTime().UTC().Format(time.RFC3339),
 		Decision:  decision,
 		Action:    string(decision),
 		Reason:    reason,
@@ -103,12 +103,12 @@ func (d *Daemon) userActive() *bool {
 // reuses the decision record's identity and destination so the pair can be
 // scored without a join, and carries only counts and elapsed time — never
 // payload. PHILOSOPHY.md §4.8.
-func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int64, started time.Time, concurrency int) {
+func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int64, started time.Time, concurrency int, previous time.Time) {
 	if connID == "" {
 		return
 	}
 	flow := decisionlog.Entry{
-		Timestamp:  timeNow().UTC().Format(time.RFC3339),
+		Timestamp:  d.nowTime().UTC().Format(time.RFC3339),
 		Kind:       decisionlog.KindFlow,
 		ConnID:     connID,
 		Decision:   entry.Decision,
@@ -123,14 +123,14 @@ func (d *Daemon) writeFlow(connID string, entry decisionlog.Entry, up, down int6
 		TeamID:     entry.TeamID,
 		BytesUp:    up,
 		BytesDown:  down,
-		DurationMS: timeNow().Sub(started).Milliseconds(),
+		DurationMS: d.nowTime().Sub(started).Milliseconds(),
 	}
 	// Only score when someone is observing. Nothing in production consumes a
 	// completed-flow score yet (internal/drift is observe-only), and scoring
 	// runs a kNN over the pair's whole cloud — ~140us per connection that
 	// would otherwise be spent producing a value no caller can read.
 	if d.onCompletedScore != nil {
-		d.onCompletedScore(d.classifyCompletedFlow(entry, flow, concurrency))
+		d.onCompletedScore(d.classifyCompletedFlowAt(entry, flow, concurrency, previous))
 	}
 	_ = d.opts.Log.Write(flow)
 }
@@ -398,7 +398,7 @@ func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.Si
 		Reason:    drift.ReasonNovelPairing,
 		Identity:  id,
 		Host:      host,
-		FirstSeen: timeNow(),
+		FirstSeen: d.nowTime(),
 		Log:       entry,
 	}
 }
@@ -407,13 +407,18 @@ func (d *Daemon) classifyDrift(host string, pi procid.ProcInfo, sig signature.Si
 // and duration are known. Prompt-time classification stays unscored: inventing
 // those values before the splice would distort the behavioural point.
 func (d *Daemon) classifyCompletedFlow(entry, flow decisionlog.Entry, concurrency int) drift.Event {
+	return d.classifyCompletedFlowAt(entry, flow, concurrency, d.lastSeen.at(drift.BaselinePairKey(entry)))
+}
+
+func (d *Daemon) classifyCompletedFlowAt(entry, flow decisionlog.Entry, concurrency int, previous time.Time) drift.Event {
 	b := d.baseline.Load()
 	if b == nil {
 		return drift.Event{Class: drift.ClassDrift, Reason: drift.ReasonNovelPairing, Host: entry.Host, Log: entry}
 	}
 	ev := b.Classify(entry)
 	id := drift.IdentityFromEntry(entry)
-	ev.Score = b.ScoreLive(id, entry.Host, decisionlog.Joined{Decision: entry, Flow: flow, HasFlow: true}, concurrency)
+	ev.Score = b.ScoreAgainst(id, entry.Host, decisionlog.Joined{Decision: entry, Flow: flow, HasFlow: true},
+		previous, concurrency)
 	return ev
 }
 
@@ -473,11 +478,13 @@ func (d *Daemon) handle(conn net.Conn) {
 		}
 		entry := d.entryForWithoutPersistenceNoHash(decisionlog.DecisionAllow, "exempt_app", "", pi, sig, "")
 		entry.DestIP, entry.DestPort = dstIP.String(), dstPort
+		previous := d.lastSeen.at(drift.BaselinePairKey(entry))
+		d.lastSeen.advanceEntry(entry)
 		_ = d.opts.Log.Write(entry)
 		conn.SetReadDeadline(timeZero())
-		started := timeNow()
+		started := d.nowTime()
 		up, down := spliceBoth(conn, upstream)
-		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency)
+		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency, previous)
 		return
 	}
 
@@ -523,6 +530,7 @@ func (d *Daemon) handle(conn net.Conn) {
 				} else {
 					entry.Reason = "net_error: upstream_dial_failed: " + err.Error()
 				}
+				d.lastSeen.advanceEntry(entry)
 				_ = d.opts.Log.Write(entry)
 				return
 			}
@@ -546,13 +554,16 @@ func (d *Daemon) handle(conn net.Conn) {
 				entry.Decision = decisionlog.DecisionDeny
 				entry.Reason = "upstream_write_failed: " + err.Error()
 			}
+			d.lastSeen.advanceEntry(entry)
 			_ = d.opts.Log.Write(entry)
 			return
 		}
+		previous := d.lastSeen.at(drift.BaselinePairKey(entry))
+		d.lastSeen.advanceEntry(entry)
 		_ = d.opts.Log.Write(entry)
-		started := timeNow()
+		started := d.nowTime()
 		up, down := spliceBoth(conn, upstream)
-		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency)
+		d.writeFlow(entry.ConnID, entry, up, down, started, concurrency, previous)
 	default: // outcomeDeny (outcomeExempt is handled by fast-path above)
 		_ = d.opts.Log.Write(entry)
 		// Close → TCP RST/FIN to client; client's TLS handshake fails.
