@@ -159,9 +159,12 @@ func tunProxyWarning(iface string) string {
 // TUN-proxy warning block when applicable.
 func printPlatformStatus(w io.Writer) error {
 	r := Probe()
-	if r.AgentLoaded {
+	switch {
+	case r.AgentLoaded:
 		fmt.Fprintln(w, "LaunchAgent: ENABLED")
-	} else {
+	case r.BootDaemonLoaded:
+		fmt.Fprintln(w, "LaunchAgent: NOT needed (boot-resident daemon is enabled)")
+	default:
 		fmt.Fprintln(w, "LaunchAgent: NOT enabled (run `egress-guard enable`)")
 	}
 	switch {

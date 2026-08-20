@@ -274,6 +274,20 @@ func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	}
 }
 
+func TestPrintPlatformStatus_BootDaemonLoadedDoesNotOfferUserEnable(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "egress-guard enable") {
+		t.Errorf("status = %q; boot daemon already covers enforcement, so enable is a no-op", out)
+	}
+}
+
 func TestPrintPlatformStatus_LoadedWithoutPIDIsNotRunning(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, launchctlPrintLoadedNotRunning, true)
