@@ -247,8 +247,9 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // using the baseline's frozen last-seen makes inter-arrival distance grow with
 // file position instead.
 //
-// The daemon advances its own live per-pair reference as accepted decisions
-// complete, so replayed quantiles and daemon distances use the same geometry.
+// The daemon captures the prior reference and advances its own live per-pair
+// state when an accepted connection is admitted to the splice, so overlapping
+// connections and replayed decisions use the same geometry.
 func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
 	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {

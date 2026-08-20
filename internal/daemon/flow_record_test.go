@@ -74,6 +74,32 @@ func TestAllowedConnection_WritesCorrelatedFlowRecord(t *testing.T) {
 	}
 }
 
+func TestAllowedConnection_AdvancesLiveReferenceAtDecisionTime(t *testing.T) {
+	logPath, _, d := runAllowedConnectionWithDaemon(t, 512, nil)
+	entries, err := decisionlog.Read(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decision decisionlog.Entry
+	for _, entry := range entries {
+		if !entry.IsFlow() {
+			decision = entry
+			break
+		}
+	}
+	if decision.ConnID == "" {
+		t.Fatalf("entries = %+v, want a decision entry", entries)
+	}
+	want, err := time.Parse(time.RFC3339, decision.Timestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.lastSeen.at(drift.BaselinePairKey(decision))
+	if !got.Equal(want) {
+		t.Fatalf("live reference = %v, want decision timestamp %v", got, want)
+	}
+}
+
 func TestAllowedConnection_ScoresCompletedFlowWithCapturedConcurrency(t *testing.T) {
 	scores := make(chan drift.Event, 1)
 	logPath, _, d := runAllowedConnectionWithDaemon(t, 512, func(d *Daemon) {
