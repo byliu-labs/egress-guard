@@ -16,6 +16,10 @@ func Glyph(r cli.StatusReport) (title, tooltip string) {
 	switch {
 	case r.TUNIface != "":
 		return "⚠️", fmt.Sprintf("Bypassed: %s owns the default route; egress-guard enforces nothing", r.TUNIface)
+	case r.BootDaemonDisabled:
+		return "⚠️", "Disabled: run `sudo launchctl enable system/com.byliu.egress-guard.daemon`"
+	case r.BootDaemonUnknown:
+		return "⚠️", "Status unavailable: could not query launchd"
 	case protected:
 		if r.PendingReviews > 0 {
 			return fmt.Sprintf("🛡️%d", r.PendingReviews),

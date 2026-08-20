@@ -14,13 +14,17 @@ func TestGlyph(t *testing.T) {
 		name      string
 		r         cli.StatusReport
 		wantTitle string
+		wantTip   string
 	}{
-		{"protected", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 42}, "🛡️"},
-		{"supported-user-agent", cli.StatusReport{AgentLoaded: true, DaemonPID: 42}, "🛡️"},
-		{"tun-bypass-wins", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, TUNIface: "utun4"}, "⚠️"},
-		{"daemon-restarting", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 0}, "⚠️"},
-		{"user-agent-restarting", cli.StatusReport{AgentLoaded: true}, "⚠️"},
-		{"not-protected", cli.StatusReport{}, "⛔"},
+		{"protected", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 42}, "🛡️", ""},
+		{"supported-user-agent", cli.StatusReport{AgentLoaded: true, DaemonPID: 42}, "🛡️", ""},
+		{"tun-bypass-wins", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, TUNIface: "utun4"}, "⚠️", "utun4"},
+		{"tun-bypass-wins-over-unknown", cli.StatusReport{BootDaemonUnknown: true, TUNIface: "utun4"}, "⚠️", "utun4"},
+		{"daemon-restarting", cli.StatusReport{BootDaemonLoaded: true, BootDaemonPID: 0}, "⚠️", ""},
+		{"user-agent-restarting", cli.StatusReport{AgentLoaded: true}, "⚠️", ""},
+		{"boot-daemon-disabled", cli.StatusReport{BootDaemonDisabled: true}, "⚠️", "launchctl enable"},
+		{"boot-daemon-unknown", cli.StatusReport{BootDaemonUnknown: true}, "⚠️", "Status unavailable"},
+		{"not-protected", cli.StatusReport{}, "⛔", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -30,6 +34,9 @@ func TestGlyph(t *testing.T) {
 			}
 			if tip == "" {
 				t.Errorf("tooltip must not be empty")
+			}
+			if c.wantTip != "" && !strings.Contains(tip, c.wantTip) {
+				t.Errorf("tooltip = %q, want it to contain %q", tip, c.wantTip)
 			}
 		})
 	}

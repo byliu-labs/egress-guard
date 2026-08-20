@@ -276,6 +276,51 @@ func TestPrintPlatformStatus_LaunchDaemonNotEnabled(t *testing.T) {
 	}
 }
 
+func TestPrintPlatformStatus_LaunchDaemonDisabled(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	prevDaemon := launchctlPrintDaemon
+	prevDisabled := launchctlPrintDisabled
+	t.Cleanup(func() {
+		launchctlPrintDaemon = prevDaemon
+		launchctlPrintDisabled = prevDisabled
+	})
+	launchctlPrintDaemon = func() (string, error) { return "", launchctlExitError(t, 113) }
+	launchctlPrintDisabled = func() (string, error) {
+		return `"com.byliu.egress-guard.daemon" => true`, nil
+	}
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "LaunchDaemon (boot-resident): DISABLED (run `sudo launchctl enable system/com.byliu.egress-guard.daemon`)") {
+		t.Errorf("expected disabled LaunchDaemon guidance; got:\n%s", out)
+	}
+	if !strings.Contains(out, "boot-daemon: disabled (run `sudo launchctl enable system/com.byliu.egress-guard.daemon`)") {
+		t.Errorf("expected disabled boot-daemon guidance; got:\n%s", out)
+	}
+}
+
+func TestPrintPlatformStatus_LaunchDaemonUnknown(t *testing.T) {
+	stubLaunchctl(t, "", false)
+	prevDaemon := launchctlPrintDaemon
+	t.Cleanup(func() { launchctlPrintDaemon = prevDaemon })
+	launchctlPrintDaemon = func() (string, error) { return "", launchctlExitError(t, 1) }
+
+	var buf bytes.Buffer
+	if err := printPlatformStatus(&buf); err != nil {
+		t.Fatalf("printPlatformStatus: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "LaunchDaemon (boot-resident): UNKNOWN (launchctl status query failed)") {
+		t.Errorf("expected unknown LaunchDaemon guidance; got:\n%s", out)
+	}
+	if !strings.Contains(out, "boot-daemon: unknown (launchctl status query failed)") {
+		t.Errorf("expected unknown boot-daemon guidance; got:\n%s", out)
+	}
+}
+
 func TestPrintPlatformStatus_LaunchDaemonRunning(t *testing.T) {
 	stubLaunchctl(t, "", false)
 	stubLaunchctlDaemon(t, launchctlPrintRunning, true)
