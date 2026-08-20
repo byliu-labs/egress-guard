@@ -101,6 +101,36 @@ func TestInstall_RefusesNonRoot(t *testing.T) {
 	}
 }
 
+func TestInstall_PassesBootDaemonProbeToProtection(t *testing.T) {
+	stubEuid(t, 0)
+	for _, tc := range []struct {
+		name      string
+		installed bool
+	}{
+		{name: "fresh install", installed: false},
+		{name: "reinstall", installed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubBootDaemonInstalled(t, tc.installed)
+			previous := installProtectionFn
+			t.Cleanup(func() { installProtectionFn = previous })
+
+			var gotHadPrevious bool
+			installProtectionFn = func(_ int, _ daemonInstaller, _ kernelInstaller, _ daemonUninstaller, hadPrevious bool) error {
+				gotHadPrevious = hadPrevious
+				return errors.New("stop after capturing install probe")
+			}
+
+			if err := Install(nil); err == nil {
+				t.Fatal("Install succeeded, want protection stub error")
+			}
+			if gotHadPrevious != tc.installed {
+				t.Errorf("hadPrevious = %v, want %v", gotHadPrevious, tc.installed)
+			}
+		})
+	}
+}
+
 func TestEnable_RefusesRoot(t *testing.T) {
 	stubEuid(t, 0)
 	err := Enable(nil)

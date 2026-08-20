@@ -46,6 +46,8 @@ func installProtection(port int, daemon daemonInstaller, kernel kernelInstaller,
 	return nil
 }
 
+var installProtectionFn = installProtection
+
 // Install writes the platform kernel rules and installs the boot-resident
 // System-domain LaunchDaemon. Requires root.
 func Install(args []string) error {
@@ -57,7 +59,7 @@ func Install(args []string) error {
 		return fmt.Errorf("install requires root: re-run with sudo")
 	}
 	k := kernel.Default()
-	if err := installProtection(*port,
+	if err := installProtectionFn(*port,
 		daemonInstaller{install: installLaunchDaemon},
 		kernelInstaller{install: k.Install},
 		daemonUninstaller{uninstall: uninstallLaunchDaemon},
