@@ -21,7 +21,8 @@ func TestIdentityFor_PopulatesPathAndHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Daemon{hasher: procid.NewExeHasher()}
+	d := newDaemonForBaselineTest()
+	d.hasher = procid.NewExeHasher()
 
 	id := d.identityFor(procid.ProcInfo{Exe: exe, Comm: "mytool"}, signature.SignedIdentity{})
 
@@ -38,7 +39,8 @@ func TestIdentityFor_PopulatesPathAndHash(t *testing.T) {
 }
 
 func TestIdentityFor_MissingBinaryLeavesHashEmpty(t *testing.T) {
-	d := &Daemon{hasher: procid.NewExeHasher()}
+	d := newDaemonForBaselineTest()
+	d.hasher = procid.NewExeHasher()
 	id := d.identityFor(procid.ProcInfo{Exe: "/nonexistent/tool", Comm: "tool"}, signature.SignedIdentity{})
 	if id.ExeSHA256 != "" {
 		t.Errorf("ExeSHA256 = %q, want empty on hash failure", id.ExeSHA256)

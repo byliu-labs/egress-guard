@@ -16,16 +16,21 @@ func Glyph(r cli.StatusReport) (title, tooltip string) {
 	switch {
 	case r.TUNIface != "":
 		return "⚠️", fmt.Sprintf("Bypassed: %s owns the default route; egress-guard enforces nothing", r.TUNIface)
-	case r.BootDaemonDisabled:
-		return "⚠️", "Disabled: run `sudo launchctl enable system/com.byliu.egress-guard.daemon`"
-	case r.BootDaemonUnknown:
-		return "⚠️", "Status unavailable: could not query launchd"
 	case protected:
 		if r.PendingReviews > 0 {
 			return fmt.Sprintf("🛡️%d", r.PendingReviews),
 				fmt.Sprintf("Protected: daemon running; %d updated binaries awaiting review", r.PendingReviews)
 		}
 		return "🛡️", "Protected: daemon running"
+	// Both boot-daemon fault states rank BELOW protected: checkDaemonJob and
+	// checkAgent are independent probes, so a launchd query that fails (or a
+	// deliberately disabled boot daemon) says nothing about a LaunchAgent that
+	// is enforcing right now. Ranking them higher hides the shield — and the
+	// pending-review badge — on a machine that is genuinely protected.
+	case r.BootDaemonDisabled:
+		return "⚠️", "Disabled: run `sudo launchctl enable system/com.byliu.egress-guard.daemon`"
+	case r.BootDaemonUnknown:
+		return "⚠️", "Status unavailable: could not query launchd"
 	case r.BootDaemonLoaded || r.AgentLoaded:
 		return "⚠️", "Daemon restarting"
 	default:

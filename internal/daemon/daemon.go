@@ -149,9 +149,10 @@ func New(opts Options) (*Daemon, error) {
 // Safe to call from a background refresher while connection goroutines classify.
 // The baseline is observe-only enrichment: swapping it never changes allow/deny.
 func (d *Daemon) SetBaseline(b *drift.Baseline) {
+	before := d.lastSeen.evictionCount()
 	d.lastSeen.seed(b)
-	if evictions := d.lastSeen.evictionCount(); evictions > 0 && d.opts.Logger != nil {
-		d.opts.Logger.Errorf("drift: live last-seen evicted %d pair(s); replay history is unbounded", evictions)
+	if evicted := d.lastSeen.evictionCount() - before; evicted > 0 && d.opts.Logger != nil {
+		d.opts.Logger.Errorf("drift: live last-seen evicted %d pair(s) this refresh; replay history is unbounded", evicted)
 	}
 	d.baseline.Store(b)
 }

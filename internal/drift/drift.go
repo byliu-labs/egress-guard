@@ -253,6 +253,10 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // 4096-pair live cap retains the pair. The calibrator's replay map is
 // unbounded; above that cap the daemon scores an evicted pair as first-contact
 // using unknownInterArrivalSeconds while replay retains its previous time.
+// Which pair loses its reference under that pressure is a policy, not an
+// accident: the daemon evicts the least-recently-advanced pair, and seeds a
+// rebuilt snapshot oldest-first so the pairs it keeps are the most recently
+// active ones — the same set replay still holds.
 func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
 	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {

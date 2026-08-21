@@ -24,6 +24,9 @@ func TestGlyph(t *testing.T) {
 		{"user-agent-restarting", cli.StatusReport{AgentLoaded: true}, "⚠️", ""},
 		{"boot-daemon-disabled", cli.StatusReport{BootDaemonDisabled: true}, "⚠️", "launchctl enable"},
 		{"boot-daemon-unknown", cli.StatusReport{BootDaemonUnknown: true}, "⚠️", "Status unavailable"},
+		{"protected-wins-over-disabled", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, BootDaemonDisabled: true}, "🛡️", "Protected"},
+		{"protected-wins-over-unknown", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, BootDaemonUnknown: true}, "🛡️", "Protected"},
+		{"pending-badge-survives-unknown", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, PendingReviews: 3, BootDaemonUnknown: true}, "🛡️3", "3 updated binaries"},
 		{"not-protected", cli.StatusReport{}, "⛔", ""},
 	}
 	for _, c := range cases {

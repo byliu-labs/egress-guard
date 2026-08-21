@@ -286,7 +286,7 @@ func TestPrintPlatformStatus_LaunchDaemonDisabled(t *testing.T) {
 	})
 	launchctlPrintDaemon = func() (string, error) { return "", launchctlExitError(t, 113) }
 	launchctlPrintDisabled = func() (string, error) {
-		return `"com.byliu.egress-guard.daemon" => true`, nil
+		return launchctlPrintDisabledRealFormat, nil
 	}
 
 	var buf bytes.Buffer

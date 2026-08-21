@@ -81,7 +81,7 @@ func TestDaemon_SetBaselineKeepsLastSeenPointer(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				before.at("test-pair")
+				d.lastSeen.at("test-pair")
 			}
 		}
 	}()
@@ -93,6 +93,20 @@ func TestDaemon_SetBaselineKeepsLastSeenPointer(t *testing.T) {
 	if d.lastSeen != before {
 		t.Fatal("SetBaseline replaced the live lastSeen state")
 	}
+}
+
+// TestDaemon_SetBaselineRequiresConstructorInitialisedLastSeen pins the
+// deletion of SetBaseline's nil-guard. Pointer identity cannot do it: every
+// test daemon is built with a non-nil lastSeen, so the guard's branch is dead
+// and re-adding it verbatim leaves the whole suite green. The guard's absence
+// is observable only as a panic on a bare &Daemon{}.
+func TestDaemon_SetBaselineRequiresConstructorInitialisedLastSeen(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("SetBaseline tolerated a nil lastSeen: the nil-guard is back, and with it a plain pointer write racing every connection goroutine")
+		}
+	}()
+	(&Daemon{}).SetBaseline(drift.BuildBaseline(nil, nil))
 }
 
 func TestDaemon_SetBaselineLogsLiveEvictions(t *testing.T) {
@@ -109,12 +123,34 @@ func TestDaemon_SetBaselineLogsLiveEvictions(t *testing.T) {
 			Host:      "host-" + strconv.Itoa(i) + ".example",
 		}
 	}
-	d.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, entries))
+	baseline := drift.BuildBaseline(&catalog.Catalog{}, entries)
+	d.SetBaseline(baseline)
 	if len(logger.messages) != 1 {
 		t.Fatalf("logger messages = %v, want exactly one eviction message", logger.messages)
 	}
 	if !strings.Contains(logger.messages[0], "evicted") {
 		t.Fatalf("logger message = %q, want eviction context", logger.messages[0])
+	}
+	// A baseline larger than the cap really does evict on every refresh, so a
+	// second line is correct. What must NOT happen is the number growing: that
+	// is the tell that the running total is being reported as this refresh's
+	// cost, which turns one steady-state condition into an alarm that inflates
+	// forever.
+	d.SetBaseline(baseline)
+	if len(logger.messages) != 2 {
+		t.Fatalf("logger messages = %v, want one line per over-capacity refresh", logger.messages)
+	}
+	if logger.messages[0] != logger.messages[1] {
+		t.Fatalf("per-refresh eviction report grew across refreshes:\n  %q\n  %q", logger.messages[0], logger.messages[1])
+	}
+
+	// A baseline that fits must be silent, or the line means nothing.
+	quiet := &recordingDaemonLogger{}
+	fits := newDaemonForBaselineTest()
+	fits.opts.Logger = quiet
+	fits.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, entries[:8]))
+	if len(quiet.messages) != 0 {
+		t.Fatalf("under-capacity SetBaseline logged %v, want silence", quiet.messages)
 	}
 }
 
