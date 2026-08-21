@@ -95,7 +95,7 @@ func TestLastSeen_ReAdvancingAPairRescuesItFromEviction(t *testing.T) {
 	}
 }
 
-// TestLastSeen_SeedKeepsTheMostRecentlyActivePairs pins seed's insertion order.
+// TestLastSeen_SeedRetainsNewestAndIsDeterministic pins seed's retention order.
 // Baseline.Pairs ranges a map, so without the sort the surviving set is a
 // different random 4096 every refresh.
 func TestLastSeen_SeedRetainsNewestAndIsDeterministic(t *testing.T) {
@@ -151,6 +151,55 @@ func TestLastSeen_SeedRetainsNewestAndIsDeterministic(t *testing.T) {
 		if !second[k] {
 			t.Fatalf("two seeds of the same baseline retained different pairs (e.g. %q); retention is nondeterministic", k)
 		}
+	}
+}
+
+// TestLastSeen_SeedDoesNotStallReadersWithHistorySize pins the reduction that
+// happens before seed takes the lock. at() sits inline on connection setup,
+// immediately before the upstream dial, and the baseline grows with every
+// distinct (identity, host) the machine has ever logged — so a seed whose
+// locked section scales with history size stalls every new TLS connection.
+// Sorting the whole snapshot under the lock measured 167ms at 100k pairs.
+func TestLastSeen_SeedDoesNotStallReadersWithHistorySize(t *testing.T) {
+	small, _ := overCapacityBaseline(t, 2*maxLiveLastSeenPairs)
+	large, _ := overCapacityBaseline(t, 25*maxLiveLastSeenPairs)
+
+	hold := func(b *drift.Baseline) time.Duration {
+		l := newLastSeen(maxLiveLastSeenPairs)
+		l.seed(b) // warm: measure steady state, not first-fill
+		var worst time.Duration
+		done := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				started := time.Now()
+				l.at("absent-pair")
+				if waited := time.Since(started); waited > worst {
+					worst = waited
+				}
+			}
+		}()
+		time.Sleep(2 * time.Millisecond)
+		l.seed(b)
+		close(done)
+		wg.Wait()
+		return worst
+	}
+
+	smallStall, largeStall := hold(small), hold(large)
+	// A 12.5x bigger history must not make a connection wait 12.5x longer. The
+	// locked section is bounded by the cap, so both stalls are the same order;
+	// the unbounded version scaled linearly with history.
+	if largeStall > 4*smallStall+time.Millisecond {
+		t.Fatalf("connection-path stall grew with history size: %v at %d pairs vs %v at %d pairs; the locked section is not bounded by the cap",
+			largeStall, 25*maxLiveLastSeenPairs, smallStall, 2*maxLiveLastSeenPairs)
 	}
 }
 

@@ -128,8 +128,17 @@ func TestDaemon_SetBaselineLogsLiveEvictions(t *testing.T) {
 	if len(logger.messages) != 1 {
 		t.Fatalf("logger messages = %v, want exactly one eviction message", logger.messages)
 	}
-	if !strings.Contains(logger.messages[0], "evicted") {
-		t.Fatalf("logger message = %q, want eviction context", logger.messages[0])
+	if !strings.Contains(logger.messages[0], "exceeds the 4096-pair live cap by 1 pair(s)") {
+		t.Fatalf("logger message = %q, want the amount the cap was exceeded by", logger.messages[0])
+	}
+	// Nothing was live before the first seed, so nothing can have been evicted.
+	// Counting declined historical pairs here would report a stable live set as
+	// though it were churning.
+	if !strings.Contains(logger.messages[0], "(0 live reference(s) dropped this refresh)") {
+		t.Fatalf("logger message = %q, want zero live references dropped when the map started empty", logger.messages[0])
+	}
+	if got := d.lastSeen.evictionCount(); got != 0 {
+		t.Fatalf("evictionCount = %d after seeding an empty map, want 0: no live reference existed to evict", got)
 	}
 	// A baseline larger than the cap really does evict on every refresh, so a
 	// second line is correct. What must NOT happen is the number growing: that
