@@ -203,6 +203,44 @@ func TestLastSeen_SeedDoesNotStallReadersWithHistorySize(t *testing.T) {
 	}
 }
 
+// TestLastSeen_SeedCountsOnlyLiveReferencesItDropped separates the two numbers
+// SetBaseline reports. Conflating them tells an operator their live state is
+// churning when it is stable: seeding 20,000 historical pairs into an empty map
+// drops no live reference at all, because none existed.
+func TestLastSeen_SeedCountsOnlyLiveReferencesItDropped(t *testing.T) {
+	b, base := overCapacityBaseline(t, 6000)
+
+	// A live pair the snapshot does not contain, recent enough to survive. The
+	// pair the cap displaces is therefore a historical one that was never live.
+	l := newLastSeen(maxLiveLastSeenPairs)
+	l.advance("live-only-pair", base.Add(10*time.Hour))
+	evicted, overCap := l.seed(b)
+	if overCap == 0 {
+		t.Fatal("a 6000-pair baseline must report cap pressure against a 4096-pair cap")
+	}
+	if evicted != 0 {
+		t.Errorf("seed reported %d live reference(s) dropped, but the pairs it declined were historical and never held", evicted)
+	}
+	if l.at("live-only-pair").IsZero() {
+		t.Error("the live-only pair was dropped despite holding the newest reference")
+	}
+
+	// And the counter must still move when a live reference really is lost:
+	// a snapshot of entirely newer pairs displaces everything held before it.
+	newer := make([]decisionlog.Entry, maxLiveLastSeenPairs)
+	for i := range newer {
+		newer[i] = decisionlog.Entry{
+			Timestamp: base.Add(100*time.Hour + time.Duration(i)*time.Second).Format(time.RFC3339),
+			Decision:  decisionlog.DecisionAllow, Exe: "/usr/bin/curl",
+			Host: "fresh-" + strconv.Itoa(i) + ".example",
+		}
+	}
+	displaced, _ := l.seed(drift.BuildBaseline(&catalog.Catalog{}, newer))
+	if displaced == 0 {
+		t.Error("a snapshot of entirely newer pairs displaced live references but reported none")
+	}
+}
+
 func TestLastSeen_CountsEvictions(t *testing.T) {
 	l := newLastSeen(2)
 	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
