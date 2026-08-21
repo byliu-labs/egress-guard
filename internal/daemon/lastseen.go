@@ -22,6 +22,13 @@ type lastSeen struct {
 	order     *list.List
 	entries   map[string]*list.Element
 	evictions uint64
+	// seedLockedPairs is how many snapshot pairs the most recent seed had in
+	// hand when it took the lock. It is the bound on work done while
+	// connection goroutines are blocked in at(), so it must stay within max
+	// however far the decision-log history grows. Timing cannot assert this:
+	// the stall is one event among a million samples, so it lives in the same
+	// statistic as scheduler noise.
+	seedLockedPairs int
 }
 
 func newLastSeen(max int) *lastSeen {
@@ -159,6 +166,7 @@ func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.seedLockedPairs = len(candidates)
 
 	merged := make(map[string]time.Time, len(l.when)+len(candidates))
 	for key, at := range l.when {

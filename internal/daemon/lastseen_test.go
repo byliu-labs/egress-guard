@@ -156,59 +156,72 @@ func TestLastSeen_SeedRetainsNewestAndIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestLastSeen_SeedDoesNotStallReadersWithHistorySize pins the reduction that
-// happens before seed takes the lock. at() sits inline on connection setup,
-// immediately before the upstream dial, and the baseline grows with every
-// distinct (identity, host) the machine has ever logged — so a seed whose
-// locked section scales with history size stalls every new TLS connection.
-// Sorting the whole snapshot under the lock measured 167ms at 100k pairs.
-func TestLastSeen_SeedDoesNotStallReadersWithHistorySize(t *testing.T) {
-	small, _ := overCapacityBaseline(t, 2*maxLiveLastSeenPairs)
-	large, _ := overCapacityBaseline(t, 25*maxLiveLastSeenPairs)
-
-	hold := func(b *drift.Baseline) time.Duration {
+// TestLastSeen_SeedBoundsWorkDoneUnderTheLock pins the reduction that happens
+// before seed takes the lock. at() sits inline on connection setup, and the
+// baseline carries one pair per distinct (identity, host) the machine has ever
+// logged, so a locked section that scales with history stalls every new TLS
+// connection — measured at 167ms for 100k pairs before the reduction.
+//
+// Asserted on the count rather than the clock deliberately. The stall is a
+// single event among ~1M at() samples, so every percentile stays flat and only
+// the maximum moves; a timing bound compares max-of-N against max-of-14N drawn
+// from a heavy-tailed distribution and reads whichever way the scheduler
+// hiccuped — measured going the wrong way on 2 of 3 runs.
+func TestLastSeen_SeedBoundsWorkDoneUnderTheLock(t *testing.T) {
+	for _, pairs := range []int{2 * maxLiveLastSeenPairs, 25 * maxLiveLastSeenPairs} {
+		b, _ := overCapacityBaseline(t, pairs)
 		l := newLastSeen(maxLiveLastSeenPairs)
-		l.seed(b) // warm: measure steady state, not first-fill
-		var worst time.Duration
-		done := make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-done:
-					return
-				default:
-				}
-				started := time.Now()
-				l.at("absent-pair")
-				if waited := time.Since(started); waited > worst {
-					worst = waited
-				}
-			}
-		}()
-		time.Sleep(2 * time.Millisecond)
 		l.seed(b)
-		close(done)
-		wg.Wait()
-		return worst
+		if l.seedLockedPairs != maxLiveLastSeenPairs {
+			t.Errorf("a %d-pair snapshot carried %d pairs into the locked section; want at most the %d-pair cap",
+				pairs, l.seedLockedPairs, maxLiveLastSeenPairs)
+		}
 	}
-
-	smallStall, largeStall := hold(small), hold(large)
-	// A 12.5x bigger history must not make a connection wait 12.5x longer. The
-	// locked section is bounded by the cap, so both stalls are the same order;
-	// the unbounded version scaled linearly with history.
-	if largeStall > 4*smallStall+time.Millisecond {
-		t.Fatalf("connection-path stall grew with history size: %v at %d pairs vs %v at %d pairs; the locked section is not bounded by the cap",
-			largeStall, 25*maxLiveLastSeenPairs, smallStall, 2*maxLiveLastSeenPairs)
+	// A snapshot below the cap is bounded by its own size, not padded to it.
+	small, _ := overCapacityBaseline(t, 64)
+	l := newLastSeen(maxLiveLastSeenPairs)
+	l.seed(small)
+	if l.seedLockedPairs != 64 {
+		t.Errorf("64-pair snapshot carried %d pairs into the locked section, want 64", l.seedLockedPairs)
 	}
 }
 
-// TestLastSeen_SeedCountsOnlyLiveReferencesItDropped separates the two numbers
-// SetBaseline reports. Conflating them tells an operator their live state is
-// churning when it is stable: seeding 20,000 historical pairs into an empty map
-// drops no live reference at all, because none existed.
+// TestLastSeen_RepeatedSeedsKeepTheThreeContainersInStep pins the rebuild's
+// three resets. when, order and entries must describe the same set after every
+// seed: if order falls short of when, evictLocked reaches Back() on an empty
+// list and nil-panics on the connection path, and entries grows without bound.
+// Seeding once into a fresh map cannot see this — it takes successive seeds of
+// disjoint content.
+func TestLastSeen_RepeatedSeedsKeepTheThreeContainersInStep(t *testing.T) {
+	base := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
+	generation := func(round int) *drift.Baseline {
+		entries := make([]decisionlog.Entry, 150)
+		for i := range entries {
+			entries[i] = decisionlog.Entry{
+				Timestamp: base.Add(time.Duration(round*1000+i) * time.Second).Format(time.RFC3339),
+				Decision:  decisionlog.DecisionAllow, Exe: "/usr/bin/curl",
+				Host: "gen" + strconv.Itoa(round) + "-" + strconv.Itoa(i) + ".example",
+			}
+		}
+		return drift.BuildBaseline(&catalog.Catalog{}, entries)
+	}
+
+	l := newLastSeen(100)
+	for round := 0; round < 5; round++ {
+		l.seed(generation(round))
+		l.advance("hot-pair", base.Add(time.Duration(round)*time.Hour))
+		l.mu.Lock()
+		when, order, entries := len(l.when), l.order.Len(), len(l.entries)
+		l.mu.Unlock()
+		if when != order || when != entries {
+			t.Fatalf("round %d: when=%d order=%d entries=%d; the rebuild left them out of step", round, when, order, entries)
+		}
+		if when > 100 {
+			t.Fatalf("round %d: retained %d pairs, over the 100 cap", round, when)
+		}
+	}
+}
+
 func TestLastSeen_SeedCountsOnlyLiveReferencesItDropped(t *testing.T) {
 	b, base := overCapacityBaseline(t, 6000)
 
@@ -324,6 +337,60 @@ func TestLastSeen_CountsEvictions(t *testing.T) {
 	l.advance("c", base.Add(2*time.Minute))
 	if got := l.evictionCount(); got != 1 {
 		t.Fatalf("evictions after exceeding capacity = %d, want 1", got)
+	}
+
+	// A seed that displaces live references must count them too. SetBaseline
+	// reports its own per-refresh figure, so nothing in production reads this
+	// counter — without this assertion the accumulation is deletable.
+	b, base2 := overCapacityBaseline(t, 8)
+	seeded := newLastSeen(2)
+	seeded.advance(pairKey(base2, 0), base2)
+	seeded.advance(pairKey(base2, 1), base2.Add(time.Second))
+	before := seeded.evictionCount()
+	seeded.seed(b)
+	if seeded.evictionCount() <= before {
+		t.Errorf("evictionCount = %d after a seed that displaced live references, was %d; seed-driven evictions are not counted",
+			seeded.evictionCount(), before)
+	}
+}
+
+// TestLastSeen_SeedSkipsPairsWithNoRecordedTime covers the zero-time guard.
+// clouds.add writes a pair's meta and points before parsing its timestamp and
+// returns early when that fails, so a malformed decision-log line leaves a pair
+// that Pairs lists with no LastSeenFor. Admitting it would put a zero reference
+// in the live map and inflate the operator-facing cap-pressure count.
+func TestLastSeen_SeedSkipsPairsWithNoRecordedTime(t *testing.T) {
+	base := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
+	good := decisionlog.Entry{
+		Timestamp: base.Format(time.RFC3339), Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "good.example",
+	}
+	malformed := decisionlog.Entry{
+		Timestamp: "not-a-timestamp", Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "malformed.example",
+	}
+	b := drift.BuildBaseline(&catalog.Catalog{}, []decisionlog.Entry{good, malformed})
+
+	var listed bool
+	for _, pair := range b.Pairs() {
+		if pair.Host == "malformed.example" {
+			listed = true
+			if !b.LastSeenFor(pair.Identity, pair.Host).IsZero() {
+				t.Skip("malformed entries no longer produce a pair without a recorded time")
+			}
+		}
+	}
+	if !listed {
+		t.Skip("malformed entries no longer produce a listed pair")
+	}
+
+	l := newLastSeen(maxLiveLastSeenPairs)
+	l.seed(b)
+	if got := l.at(drift.BaselinePairKey(malformed)); !got.IsZero() {
+		t.Errorf("a pair with no recorded time entered the live map as %v", got)
+	}
+	if l.seedLockedPairs != 1 {
+		t.Errorf("seed carried %d pairs into the locked section, want 1: the timeless pair must not be counted", l.seedLockedPairs)
 	}
 }
 
