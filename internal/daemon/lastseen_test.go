@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"reflect"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -238,6 +240,73 @@ func TestLastSeen_SeedCountsOnlyLiveReferencesItDropped(t *testing.T) {
 	displaced, _ := l.seed(drift.BuildBaseline(&catalog.Catalog{}, newer))
 	if displaced == 0 {
 		t.Error("a snapshot of entirely newer pairs displaced live references but reported none")
+	}
+}
+
+// pairKey names the live key for one host in overCapacityBaseline's fixture.
+func pairKey(base time.Time, i int) string {
+	return drift.BaselinePairKey(decisionlog.Entry{
+		Timestamp: base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+		Decision:  decisionlog.DecisionAllow, Exe: "/usr/bin/curl",
+		Host: "host-" + strconv.Itoa(i) + ".example",
+	})
+}
+
+// TestLastSeen_SeedLeavesTheOldestPairNextToEvict pins the direction of seed's
+// rebuild. Both the code comment and ScoreAgainst's doc assert that the newest
+// reference ends up at the front and the oldest is what eviction reaches for
+// next; without this, reversing the push loop makes the very next advance
+// evict the NEWEST pair, and nothing notices.
+func TestLastSeen_SeedLeavesTheOldestPairNextToEvict(t *testing.T) {
+	b, base := overCapacityBaseline(t, 4)
+	l := newLastSeen(4)
+	l.seed(b)
+	l.advance("brand-new-pair", base.Add(time.Hour))
+
+	if got := l.at(pairKey(base, 0)); !got.IsZero() {
+		t.Errorf("oldest seeded pair survived the first eviction: %v", got)
+	}
+	if got := l.at(pairKey(base, 3)); got.IsZero() {
+		t.Error("newest seeded pair was evicted first; the rebuilt list is ordered backwards")
+	}
+}
+
+// TestLastSeen_SeedBreaksTimestampTiesDeterministically covers the case the
+// sort's tie-break exists for. Decision-log timestamps are second-resolution,
+// so ties at the cap boundary are ordinary; without the tie-break, which pair
+// survives falls back to map iteration order and re-rolls every refresh.
+func TestLastSeen_SeedBreaksTimestampTiesDeterministically(t *testing.T) {
+	base := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
+	entries := []decisionlog.Entry{{
+		Timestamp: base.Add(time.Hour).Format(time.RFC3339), Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "newest.example",
+	}}
+	for i := 0; i < 20; i++ { // all sharing one timestamp, at the boundary
+		entries = append(entries, decisionlog.Entry{
+			Timestamp: base.Format(time.RFC3339), Decision: decisionlog.DecisionAllow,
+			Exe: "/usr/bin/curl", Host: "tied-" + strconv.Itoa(i) + ".example",
+		})
+	}
+	b := drift.BuildBaseline(&catalog.Catalog{}, entries)
+
+	retained := func() []string {
+		l := newLastSeen(5)
+		l.seed(b)
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		out := make([]string, 0, len(l.when))
+		for k := range l.when {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		return out
+	}
+	first := retained()
+	for attempt := 0; attempt < 8; attempt++ {
+		got := retained()
+		if !reflect.DeepEqual(first, got) {
+			t.Fatalf("tied pairs retained a different set on attempt %d:\n  %v\n  %v", attempt, first, got)
+		}
 	}
 }
 
