@@ -53,19 +53,26 @@ func TestLastSeen_EvictsLeastRecentlyAdvancedBeyondTheCap(t *testing.T) {
 }
 
 func TestLastSeen_SeedingBeyondCapacityStaysBounded(t *testing.T) {
-	l := newLastSeen(4096)
 	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	started := time.Now()
-	for i := 0; i < 20_000; i++ {
-		l.advance(strconv.Itoa(i), base.Add(time.Duration(i)*time.Second))
+	fill := func(pairs int) time.Duration {
+		l := newLastSeen(4096)
+		started := time.Now()
+		for i := 0; i < pairs; i++ {
+			l.advance(strconv.Itoa(i), base.Add(time.Duration(i)*time.Second))
+		}
+		return time.Since(started)
 	}
-	// Deliberately loose. This guards an algorithmic class, not a benchmark:
-	// the scan-for-minimum it replaced measures ~800ms here, so 500ms still
-	// kills it by 16x. A tight bound flakes — the same loop measured 27ms and
-	// 267ms on consecutive runs of the full `-race` suite on an idle laptop,
-	// and a false "eviction is too expensive" is worse than no guard at all.
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("advancing 20,000 pairs took %v; eviction is too expensive", elapsed)
+	// A wall-clock ceiling cannot work here: the same loop measured 27ms and
+	// 267ms on consecutive runs of the full -race suite on an idle laptop, so
+	// any bound tight enough to catch the scan is loose enough to flake. Ratio
+	// against an eviction-free fill on the same machine, in the same run,
+	// absorbs that. Observed ~5x with O(1) eviction; the scan-for-minimum this
+	// replaced is ~1400x, so 50x has an order of magnitude of margin on both
+	// sides.
+	atCapacity, overCapacity := fill(4096), fill(20_000)
+	if ratio := float64(overCapacity) / float64(atCapacity); ratio > 50 {
+		t.Fatalf("20,000 pairs cost %v against %v at capacity (%.0fx); eviction is not O(1)",
+			overCapacity, atCapacity, ratio)
 	}
 }
 
@@ -122,6 +129,23 @@ func TestLastSeen_SeedRetainsNewestAndIsDeterministic(t *testing.T) {
 	first, second := snapshot(), snapshot()
 	if len(first) != maxLiveLastSeenPairs {
 		t.Fatalf("retained %d pairs, want the cap %d", len(first), maxLiveLastSeenPairs)
+	}
+	// Timestamp order and key order disagree here on purpose: host-5999 is the
+	// newest pair but sorts late lexicographically, and host-1 is nearly the
+	// oldest but sorts early. Retention must follow the clock, not the name.
+	newest := drift.BaselinePairKey(decisionlog.Entry{
+		Timestamp: base.Add(5999 * time.Second).Format(time.RFC3339), Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "host-5999.example",
+	})
+	oldest := drift.BaselinePairKey(decisionlog.Entry{
+		Timestamp: base.Add(time.Second).Format(time.RFC3339), Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "host-1.example",
+	})
+	if !first[newest] {
+		t.Error("the newest pair was evicted; retention is not ordered by reference time")
+	}
+	if first[oldest] {
+		t.Error("an oldest-decile pair was retained over newer ones; retention is not ordered by reference time")
 	}
 	for k := range first {
 		if !second[k] {
