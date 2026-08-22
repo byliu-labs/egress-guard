@@ -150,9 +150,16 @@ func New(opts Options) (*Daemon, error) {
 // The baseline is observe-only enrichment: swapping it never changes allow/deny.
 func (d *Daemon) SetBaseline(b *drift.Baseline) {
 	evicted, overCap := d.lastSeen.seed(b)
-	if overCap > 0 && d.opts.Logger != nil {
-		d.opts.Logger.Errorf("drift: baseline exceeds the %d-pair live cap by %d pair(s) (%d live reference(s) dropped this refresh); the calibrator replay is unbounded, so thresholds derived from it no longer apply above the cap",
-			maxLiveLastSeenPairs, overCap, evicted)
+	// overCap and evicted are independent, and gating on overCap alone makes
+	// the worse case the silent one. A snapshot that fits the cap can still
+	// displace every live reference — the live map holds up to max and the
+	// snapshot holds up to max, so their merge can exceed it while neither
+	// does alone. That shape is reachable whenever the log the baseline is
+	// rebuilt from is missing pairs the live map holds, which is exactly what
+	// an unwritable state volume produces: Log.Write errors are discarded.
+	if (overCap > 0 || evicted > 0) && d.opts.Logger != nil {
+		d.opts.Logger.Errorf("drift: live last-seen is at its %d-pair cap (baseline over by %d pair(s), %d live reference(s) dropped this refresh, %d since start); the calibrator replay is unbounded, so thresholds derived from it no longer apply above the cap",
+			maxLiveLastSeenPairs, overCap, evicted, d.lastSeen.evictionCount())
 	}
 	d.baseline.Store(b)
 }

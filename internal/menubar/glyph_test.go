@@ -27,6 +27,13 @@ func TestGlyph(t *testing.T) {
 		{"protected-wins-over-disabled", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, BootDaemonDisabled: true}, "🛡️", "Protected"},
 		{"protected-wins-over-unknown", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, BootDaemonUnknown: true}, "🛡️", "Protected"},
 		{"pending-badge-survives-unknown", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, PendingReviews: 3, BootDaemonUnknown: true}, "🛡️3", "3 updated binaries"},
+		// Both fault states also outrank "Daemon restarting", and that choice
+		// needs a row or the next refactor flips it for free. On the agent path
+		// with DaemonPID == 0 nothing is enforcing under either message, so the
+		// tooltip should carry the durable condition the user can act on rather
+		// than a guess that a restart is in progress and will resolve itself.
+		{"disabled-outranks-restarting", cli.StatusReport{AgentLoaded: true, BootDaemonDisabled: true}, "⚠️", "launchctl enable"},
+		{"unknown-outranks-restarting", cli.StatusReport{AgentLoaded: true, BootDaemonUnknown: true}, "⚠️", "Status unavailable"},
 		{"not-protected", cli.StatusReport{}, "⛔", ""},
 	}
 	for _, c := range cases {

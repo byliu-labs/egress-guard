@@ -156,33 +156,69 @@ func TestLastSeen_SeedRetainsNewestAndIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestLastSeen_SeedBoundsWorkDoneUnderTheLock pins the reduction that happens
-// before seed takes the lock. at() sits inline on connection setup, and the
-// baseline carries one pair per distinct (identity, host) the machine has ever
-// logged, so a locked section that scales with history stalls every new TLS
-// connection — measured at 167ms for 100k pairs before the reduction.
-//
-// Asserted on the count rather than the clock deliberately. The stall is a
-// single event among ~1M at() samples, so every percentile stays flat and only
-// the maximum moves; a timing bound compares max-of-N against max-of-14N drawn
-// from a heavy-tailed distribution and reads whichever way the scheduler
-// hiccuped — measured going the wrong way on 2 of 3 runs.
-func TestLastSeen_SeedBoundsWorkDoneUnderTheLock(t *testing.T) {
+// TestReduceSnapshot_CutsToTheCap pins the reduction itself, on the pure
+// function, with no lock and no goroutines in the picture.
+func TestReduceSnapshot_CutsToTheCap(t *testing.T) {
 	for _, pairs := range []int{2 * maxLiveLastSeenPairs, 25 * maxLiveLastSeenPairs} {
 		b, _ := overCapacityBaseline(t, pairs)
-		l := newLastSeen(maxLiveLastSeenPairs)
-		l.seed(b)
-		if l.seedLockedPairs != maxLiveLastSeenPairs {
-			t.Errorf("a %d-pair snapshot carried %d pairs into the locked section; want at most the %d-pair cap",
-				pairs, l.seedLockedPairs, maxLiveLastSeenPairs)
+		candidates, overCap := reduceSnapshot(b, maxLiveLastSeenPairs)
+		if len(candidates) != maxLiveLastSeenPairs {
+			t.Errorf("a %d-pair snapshot reduced to %d, want the %d-pair cap", pairs, len(candidates), maxLiveLastSeenPairs)
+		}
+		if want := pairs - maxLiveLastSeenPairs; overCap != want {
+			t.Errorf("a %d-pair snapshot reported overCap = %d, want %d", pairs, overCap, want)
 		}
 	}
 	// A snapshot below the cap is bounded by its own size, not padded to it.
 	small, _ := overCapacityBaseline(t, 64)
+	candidates, overCap := reduceSnapshot(small, maxLiveLastSeenPairs)
+	if len(candidates) != 64 || overCap != 0 {
+		t.Errorf("64-pair snapshot reduced to %d with overCap %d, want 64 and 0", len(candidates), overCap)
+	}
+}
+
+// TestLastSeen_SeedReducesTheSnapshotBeforeTakingTheLock pins WHERE the
+// expensive work happens, which is the property that matters and the one a
+// value assertion cannot reach. at() sits inline on connection setup, and the
+// baseline carries one pair per distinct (identity, host) the machine has ever
+// logged, so a locked section that scales with history stalls every new TLS
+// connection — measured at 167ms for 100k pairs.
+//
+// An earlier version of this test asserted a count that seed itself recorded.
+// That is production reporting a number about its own behaviour: the value is
+// invariant to where the lock is taken, so moving the lock to the top of seed
+// left it green. This holds the mutex from the test — standing in for a
+// connection goroutine parked in at() — and requires the reduction to complete
+// anyway. With the lock taken first the hook can never fire, so the timeout is
+// deterministic rather than a performance bound.
+func TestLastSeen_SeedReducesTheSnapshotBeforeTakingTheLock(t *testing.T) {
+	b, _ := overCapacityBaseline(t, 25*maxLiveLastSeenPairs)
 	l := newLastSeen(maxLiveLastSeenPairs)
-	l.seed(small)
-	if l.seedLockedPairs != 64 {
-		t.Errorf("64-pair snapshot carried %d pairs into the locked section, want 64", l.seedLockedPairs)
+
+	reached := make(chan int, 1)
+	t.Cleanup(func() { seedReduced = nil })
+	seedReduced = func(n int) { reached <- n }
+
+	l.mu.Lock()
+	done := make(chan struct{})
+	go func() { defer close(done); l.seed(b) }()
+
+	var got int
+	var timedOut bool
+	select {
+	case got = <-reached:
+	case <-time.After(30 * time.Second):
+		timedOut = true
+	}
+	l.mu.Unlock()
+	<-done
+
+	if timedOut {
+		t.Fatalf("seed did not finish reducing a %d-pair snapshot while a connection goroutine held the lock: the sort now runs with every new TLS connection blocked in at()",
+			25*maxLiveLastSeenPairs)
+	}
+	if got != maxLiveLastSeenPairs {
+		t.Fatalf("seed carried %d pairs into the locked section, want at most the %d-pair cap", got, maxLiveLastSeenPairs)
 	}
 }
 
@@ -256,6 +292,80 @@ func TestLastSeen_SeedCountsOnlyLiveReferencesItDropped(t *testing.T) {
 	}
 }
 
+// TestLastSeen_SeedRetainsExactlyTheNewestMaxOfTheMergedSet pins the identity
+// of the surviving set, which is what the daemon/replay agreement is written
+// against: "the pairs it keeps are the most recently active ones — the same set
+// replay still holds."
+//
+// Asserting that one designated pair survived cannot do this. With 4096 of 4097
+// pairs retained, an unordered rebuild keeps any given pair 99.98% of the time,
+// so that assertion passes almost always against a merge with no sort at all.
+// The expected set here is computed from the full snapshot merged by hand, not
+// from the reduced candidate slice, so both sides of the comparison do not flow
+// through the same production code.
+func TestLastSeen_SeedRetainsExactlyTheNewestMaxOfTheMergedSet(t *testing.T) {
+	const (
+		max      = 64
+		snapshot = 100
+		liveOnly = 10
+	)
+	b, base := overCapacityBaseline(t, snapshot)
+
+	l := newLastSeen(max)
+	oracle := map[string]time.Time{}
+	for i := 0; i < snapshot; i++ {
+		oracle[pairKey(base, i)] = base.Add(time.Duration(i) * time.Second)
+	}
+	for j := 0; j < liveOnly; j++ {
+		key, at := "live-"+strconv.Itoa(j), base.Add(time.Duration(200+j)*time.Second)
+		l.advance(key, at)
+		oracle[key] = at
+	}
+	// One key held by both sides, live strictly newer: the merge must keep the
+	// live time, so this pair ranks first rather than last.
+	shared := pairKey(base, 0)
+	sharedAt := base.Add(300 * time.Second)
+	l.advance(shared, sharedAt)
+	oracle[shared] = sharedAt
+
+	l.seed(b)
+
+	expected := make([]keyedTime, 0, len(oracle))
+	for key, at := range oracle {
+		expected = append(expected, keyedTime{key, at})
+	}
+	sort.Slice(expected, func(i, j int) bool { return newestFirst(expected[i], expected[j]) })
+	want := map[string]time.Time{}
+	for _, e := range expected[:max] {
+		want[e.key] = e.at
+	}
+
+	l.mu.Lock()
+	got := make(map[string]time.Time, len(l.when))
+	for key, at := range l.when {
+		got[key] = at
+	}
+	l.mu.Unlock()
+
+	if !reflect.DeepEqual(got, want) {
+		var missing, extra []string
+		for key := range want {
+			if _, ok := got[key]; !ok {
+				missing = append(missing, key)
+			}
+		}
+		for key := range got {
+			if _, ok := want[key]; !ok {
+				extra = append(extra, key)
+			}
+		}
+		sort.Strings(missing)
+		sort.Strings(extra)
+		t.Fatalf("retained set is not the newest %d of the merged set\n  kept %d, want %d\n  missing (%d): %v\n  unexpected (%d): %v",
+			max, len(got), len(want), len(missing), missing, len(extra), extra)
+	}
+}
+
 // pairKey names the live key for one host in overCapacityBaseline's fixture.
 func pairKey(base time.Time, i int) string {
 	return drift.BaselinePairKey(decisionlog.Entry{
@@ -274,8 +384,24 @@ func TestLastSeen_SeedLeavesTheOldestPairNextToEvict(t *testing.T) {
 	b, base := overCapacityBaseline(t, 4)
 	l := newLastSeen(4)
 	l.seed(b)
-	l.advance("brand-new-pair", base.Add(time.Hour))
 
+	// Assert the WHOLE rebuilt order, not two endpoints of it. Go yields only a
+	// handful of rotations for a map this small, so probing the front and back
+	// leaves an unordered rebuild passing about one run in three — which is how
+	// a regression here reaches CI green, then lives on as an intermittent that
+	// gets rerun until it goes away.
+	l.mu.Lock()
+	var order []string
+	for element := l.order.Front(); element != nil; element = element.Next() {
+		order = append(order, element.Value.(string))
+	}
+	l.mu.Unlock()
+	want := []string{pairKey(base, 3), pairKey(base, 2), pairKey(base, 1), pairKey(base, 0)}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("rebuilt LRU order = %v, want newest-first %v", order, want)
+	}
+
+	l.advance("brand-new-pair", base.Add(time.Hour))
 	if got := l.at(pairKey(base, 0)); !got.IsZero() {
 		t.Errorf("oldest seeded pair survived the first eviction: %v", got)
 	}
@@ -389,8 +515,12 @@ func TestLastSeen_SeedSkipsPairsWithNoRecordedTime(t *testing.T) {
 	if got := l.at(drift.BaselinePairKey(malformed)); !got.IsZero() {
 		t.Errorf("a pair with no recorded time entered the live map as %v", got)
 	}
-	if l.seedLockedPairs != 1 {
-		t.Errorf("seed carried %d pairs into the locked section, want 1: the timeless pair must not be counted", l.seedLockedPairs)
+	// The timeless pair must not count as cap pressure either. With a cap of
+	// one and one real pair, measuring overCap on the raw pair list instead of
+	// on the dated candidates reports pressure on a map that fits exactly.
+	if candidates, overCap := reduceSnapshot(b, 1); len(candidates) != 1 || overCap != 0 {
+		t.Errorf("reduceSnapshot kept %d candidate(s) with overCap %d, want 1 and 0: a pair with no recorded time is neither a candidate nor cap pressure",
+			len(candidates), overCap)
 	}
 }
 
@@ -445,5 +575,54 @@ func TestLastSeen_SeedKeepsTheNewerReference(t *testing.T) {
 	l.seed(drift.BuildBaseline(&catalog.Catalog{}, []decisionlog.Entry{decision}))
 	if got := l.at(key); !got.Equal(live) {
 		t.Fatalf("seed rolled the live reference back to %v", got)
+	}
+}
+
+// TestLastSeen_DivergesFromReplayOnOutOfOrderCompletion pins the second bound
+// named in ScoreAgainst's doc comment. An entry is stamped when its branch
+// decides but written only after the upstream dial returns, so two overlapping
+// connections to one pair can reach the log in dial-completion order rather
+// than timestamp order. The daemon's advance is monotonic and keeps the newer
+// reference; BuildBaseline assigns unconditionally and keeps whichever line
+// came last in the file. They disagree, and the doc comment says so.
+//
+// This asserts a divergence rather than an agreement on purpose. The comment
+// previously claimed these two agreed for exactly this case; without a test the
+// claim was free to be wrong, and a later change that closed the gap would be
+// just as invisible. Either direction now has to update this test.
+func TestLastSeen_DivergesFromReplayOnOutOfOrderCompletion(t *testing.T) {
+	stampedFirst := decisionlog.Entry{
+		Timestamp: "2026-08-19T12:00:00Z", Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "overlap.example",
+	}
+	stampedSecond := decisionlog.Entry{
+		Timestamp: "2026-08-19T12:00:01Z", Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "overlap.example",
+	}
+	key := drift.BaselinePairKey(stampedFirst)
+	if key != drift.BaselinePairKey(stampedSecond) {
+		t.Fatal("fixture is wrong: both connections must belong to one pair")
+	}
+
+	// File order is dial-completion order: the connection stamped first dialed
+	// slowly, so it is written second.
+	logOrder := []decisionlog.Entry{stampedSecond, stampedFirst}
+
+	l := newLastSeen(maxLiveLastSeenPairs)
+	for _, entry := range logOrder {
+		l.advanceEntry(entry)
+	}
+	daemon := l.at(key)
+
+	b := drift.BuildBaseline(&catalog.Catalog{}, logOrder)
+	replay := b.LastSeenFor(catalog.Identity{ExeBasename: "curl"}, "overlap.example")
+
+	if daemon.IsZero() || replay.IsZero() {
+		t.Fatalf("fixture is wrong: daemon = %v, replay = %v, both must be set", daemon, replay)
+	}
+	if !daemon.After(replay) {
+		t.Fatalf("daemon = %v, replay = %v: the daemon must keep the newer reference and replay the last-written one. "+
+			"If replay became monotonic, ScoreAgainst's doc comment now overstates the bound and must be updated with this test.",
+			daemon, replay)
 	}
 }

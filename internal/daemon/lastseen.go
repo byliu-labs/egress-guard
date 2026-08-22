@@ -22,13 +22,6 @@ type lastSeen struct {
 	order     *list.List
 	entries   map[string]*list.Element
 	evictions uint64
-	// seedLockedPairs is how many snapshot pairs the most recent seed had in
-	// hand when it took the lock. It is the bound on work done while
-	// connection goroutines are blocked in at(), so it must stay within max
-	// however far the decision-log history grows. Timing cannot assert this:
-	// the stall is one event among a million samples, so it lives in the same
-	// statistic as scheduler noise.
-	seedLockedPairs int
 }
 
 func newLastSeen(max int) *lastSeen {
@@ -116,41 +109,34 @@ func newestFirst(a, b keyedTime) bool {
 	return a.at.After(b.at)
 }
 
-// seed folds a rebuilt snapshot into the live state without moving a live
-// reference backwards when the log snapshot lags a served connection. It
-// returns the number of live references it had to drop, and how far the
-// snapshot exceeds the live cap.
+// reduceSnapshot orders a rebuilt baseline newest-first and cuts it to the
+// live cap, returning the retained candidates and how far the snapshot
+// exceeded that cap.
 //
-// It rebuilds rather than inserting pair-by-pair. Incremental insertion cannot
-// work here: Baseline.Pairs ranges a map, so it yields a different order every
-// call, and advance treats every insert as recent activity — so feeding a
-// snapshot through it would make the surviving set a fresh coin flip per
-// refresh, and would push out the pair a connection goroutine advanced seconds
-// ago in favour of historical ones. Rebuilding keeps the invariant the
-// daemon/replay agreement is written against: the pairs retained are the ones
-// with the newest references, live or historical.
+// It is a package-level function taking no receiver and no lock, and that is
+// the whole point of its existence. The baseline carries one pair per distinct
+// (identity, host) ever logged and the daemon is boot-resident, so the snapshot
+// grows without limit over the life of the machine — while at() sits inline on
+// connection setup, immediately before the upstream dial. Sorting the whole
+// history while holding the mutex stalls every new TLS connection for as long
+// as it takes (measured: 167ms at 100k pairs). Keeping this work in a function
+// that cannot reach l.mu means the stall cannot be reintroduced by moving one
+// line; it would take moving this body into the locked section.
 //
-// The snapshot is reduced to its own newest max pairs BEFORE the lock is
-// taken, and only that bounded slice is merged under it. This matters: the
-// baseline has one pair per distinct (identity, host) ever logged and the
-// daemon is boot-resident, so the snapshot grows without limit over the life
-// of the machine — while at() sits inline on connection setup, immediately
-// before the upstream dial. Sorting the whole history under the lock stalls
-// every new TLS connection for as long as it takes (measured: 167ms at 100k
-// pairs). The reduction is safe because a pair outside the snapshot's own top
-// max can never survive the merge — live entries only add competitors for the
-// same slots.
-func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
+// The reduction is sound: a pair outside the snapshot's own top max can never
+// survive the merge, because live entries only add competitors for the same
+// slots, never remove them.
+func reduceSnapshot(b *drift.Baseline, max int) (candidates []keyedTime, overCap int) {
 	if b == nil {
-		return 0, 0
+		return nil, 0
 	}
-	// max is written once, in newLastSeen, and never again.
-	max := l.max
-
 	pairs := b.Pairs()
-	candidates := make([]keyedTime, 0, len(pairs))
+	candidates = make([]keyedTime, 0, len(pairs))
 	for _, pair := range pairs {
 		at := b.LastSeenFor(pair.Identity, pair.Host)
+		// A pair the log listed but never dated is not cap pressure: counting
+		// it would inflate the operator-facing figure on a machine nowhere
+		// near the cap. overCap is measured on candidates, never on pairs.
 		if at.IsZero() {
 			continue
 		}
@@ -163,11 +149,43 @@ func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
 	if len(candidates) > max {
 		candidates = candidates[:max]
 	}
+	return candidates, overCap
+}
 
+// seedReduced is a test seam fired with the reduced candidate count at the one
+// instant that matters: after the snapshot has been cut down and before the
+// mutex is taken. Nil in production. A test holding the lock can observe it
+// fire, which is the only external evidence that the expensive work really
+// happens outside the locked section — a value assertion cannot tell.
+var seedReduced func(int)
+
+// seed folds a rebuilt snapshot into the live state without moving a live
+// reference backwards when the log snapshot lags a served connection. It
+// returns the number of live references it had to drop, and how far the
+// snapshot exceeds the live cap.
+func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
+	// max is written once, in newLastSeen, and never again.
+	candidates, overCap := reduceSnapshot(b, l.max)
+	if seedReduced != nil {
+		seedReduced(len(candidates))
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.seedLockedPairs = len(candidates)
+	return l.mergeLocked(candidates), overCap
+}
 
+// mergeLocked folds an already-reduced snapshot into live state and rebuilds
+// the three containers. It rebuilds rather than inserting pair-by-pair:
+// Baseline.Pairs ranges a map, so it yields a different order every call, and
+// advance treats every insert as recent activity — feeding a snapshot through
+// it would make the surviving set a fresh coin flip per refresh, and would push
+// out the pair a connection goroutine advanced seconds ago in favour of
+// historical ones. Rebuilding keeps the invariant the daemon/replay agreement
+// is written against: the pairs retained are the ones with the newest
+// references, live or historical.
+//
+// Caller must hold l.mu, and candidates must already be bounded by l.max.
+func (l *lastSeen) mergeLocked(candidates []keyedTime) (evicted int) {
 	merged := make(map[string]time.Time, len(l.when)+len(candidates))
 	for key, at := range l.when {
 		merged[key] = at
@@ -184,14 +202,14 @@ func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
 		ordered = append(ordered, keyedTime{key, at})
 	}
 	sort.Slice(ordered, func(i, j int) bool { return newestFirst(ordered[i], ordered[j]) })
-	if len(ordered) > max {
-		for _, dropped := range ordered[max:] {
+	if len(ordered) > l.max {
+		for _, dropped := range ordered[l.max:] {
 			if _, wasLive := l.when[dropped.key]; wasLive {
 				evicted++
 			}
 		}
 		l.evictions += uint64(evicted)
-		ordered = ordered[:max]
+		ordered = ordered[:l.max]
 	}
 
 	l.when = make(map[string]time.Time, len(ordered))
@@ -203,5 +221,5 @@ func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
 		l.when[ordered[i].key] = ordered[i].at
 		l.entries[ordered[i].key] = l.order.PushFront(ordered[i].key)
 	}
-	return evicted, overCap
+	return evicted
 }

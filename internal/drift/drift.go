@@ -248,15 +248,29 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // file position instead.
 //
 // The daemon captures the prior reference and advances its own live per-pair
-// state when an accepted connection is admitted to the splice, so overlapping
-// connections and replayed decisions use the same geometry while the daemon's
-// 4096-pair live cap retains the pair. The calibrator's replay map is
-// unbounded; above that cap the daemon scores an evicted pair as first-contact
-// using unknownInterArrivalSeconds while replay retains its previous time.
-// Which pair loses its reference under that pressure is a policy, not an
-// accident: the daemon evicts the least-recently-advanced pair, and seeds a
-// rebuilt snapshot oldest-first so the pairs it keeps are the most recently
-// active ones — the same set replay still holds.
+// state when an accepted connection is admitted to the splice, so connections
+// that complete in the order they were stamped give replay the same geometry
+// the daemon used. Two bounds limit that guarantee.
+//
+// The cap. The calibrator's replay map is unbounded; above the daemon's
+// 4096-pair live cap the daemon scores an evicted pair as first-contact using
+// unknownInterArrivalSeconds while replay retains its previous time. Which pair
+// loses its reference under that pressure is a policy, not an accident: the
+// daemon evicts the least-recently-advanced pair, and rebuilds a seeded
+// snapshot newest-first so the pairs it keeps are the most recently active
+// ones — the same set replay still holds.
+//
+// Out-of-order completion. An entry is stamped when its branch decides but
+// written only after the upstream dial returns, so two overlapping connections
+// to one pair can reach the log in dial-completion order rather than timestamp
+// order. lastSeen.advance is monotonic and keeps the newer reference; clouds.add
+// and the calibrator's replay both assign unconditionally and keep whichever
+// line came last in the file. For that pair the two disagree, and the replayed
+// side additionally scores the older connection with unknownInterArrivalSeconds
+// because its timestamp does not follow the reference it is given. Making replay
+// monotonic would close this, and is deliberately not done here: it changes the
+// inter-arrival dimension of every point ever derived, so it belongs with the
+// symmetric-cap question rather than in a doc comment.
 func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
 	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {
