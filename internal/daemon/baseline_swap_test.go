@@ -134,7 +134,9 @@ func TestDaemon_SetBaselineLogsLiveEvictions(t *testing.T) {
 	// Nothing was live before the first seed, so nothing can have been evicted.
 	// Counting declined historical pairs here would report a stable live set as
 	// though it were churning.
-	if !strings.Contains(logger.messages[0], "0 live reference(s) dropped this refresh") {
+	// Anchored on both separators: an unanchored "0 live reference(s)" is a
+	// substring of every non-zero count ending in 0.
+	if !strings.Contains(logger.messages[0], "pair(s), 0 live reference(s) dropped this refresh, ") {
 		t.Fatalf("logger message = %q, want zero live references dropped when the map started empty", logger.messages[0])
 	}
 	if got := d.lastSeen.evictionCount(); got != 0 {
@@ -254,43 +256,75 @@ func TestDaemon_SetBaselineReportsLiveEvictionsTheBaselineDidNotCause(t *testing
 // the connection path, so it carries churn between refreshes that seed's
 // per-refresh return value never observes; unreported, that churn is invisible.
 //
-// The refreshes must carry disjoint pairs. Reseeding one over-capacity baseline
-// is idempotent after the rebuild — seed keeps the same newest max, evicts
-// nothing, and the lifetime total correctly stays put. Live references are lost
-// only when a refresh brings pairs that outrank the ones already held.
+// The churn therefore has to come from advance, not from seed. An earlier
+// version of this test drove both refreshes through seed, so the lifetime total
+// and the per-refresh count moved together (0/0 then 4096/4096) and no
+// assertion could tell them apart — reporting uint64(evicted) in place of
+// evictionCount() left the whole suite green. Here the second refresh evicts
+// nothing itself while 100 live references have already been dropped by the
+// connection path, so the two numbers are forced apart.
 func TestDaemon_SetBaselineReportsLifetimeEvictions(t *testing.T) {
 	logger := &recordingDaemonLogger{}
 	d := newDaemonForBaselineTest()
 	d.opts.Logger = logger
 
+	entries := make([]decisionlog.Entry, maxLiveLastSeenPairs+1)
 	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	overCapacityAt := func(prefix string, at time.Time) *drift.Baseline {
-		entries := make([]decisionlog.Entry, maxLiveLastSeenPairs+1)
-		for i := range entries {
-			entries[i] = decisionlog.Entry{
-				Timestamp: at.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
-				Decision:  decisionlog.DecisionAllow,
-				Exe:       "/usr/bin/curl",
-				Host:      prefix + "-" + strconv.Itoa(i) + ".example",
-			}
+	for i := range entries {
+		entries[i] = decisionlog.Entry{
+			Timestamp: base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+			Decision:  decisionlog.DecisionAllow,
+			Exe:       "/usr/bin/curl",
+			Host:      "host-" + strconv.Itoa(i) + ".example",
 		}
-		return drift.BuildBaseline(&catalog.Catalog{}, entries)
+	}
+	baseline := drift.BuildBaseline(&catalog.Catalog{}, entries)
+
+	d.SetBaseline(baseline)
+	if got := d.lastSeen.evictionCount(); got != 0 {
+		t.Fatalf("evictionCount = %d after the first seed of an empty map, want 0", got)
 	}
 
-	d.SetBaseline(overCapacityAt("first", base))
-	d.SetBaseline(overCapacityAt("second", base.Add(24*time.Hour)))
+	// The connection path drops 100 live references. The map is already at
+	// capacity, so each new pair evicts exactly one.
+	const churn = 100
+	for i := 0; i < churn; i++ {
+		d.lastSeen.advance("connection-"+strconv.Itoa(i), base.Add(time.Duration(10000+i)*time.Second))
+	}
+	if got := d.lastSeen.evictionCount(); got != churn {
+		t.Fatalf("evictionCount = %d after %d connection-path evictions, want %d: the fixture is wrong", got, churn, churn)
+	}
 
+	d.SetBaseline(baseline)
 	if len(logger.messages) != 2 {
 		t.Fatalf("logger messages = %v, want one line per over-capacity refresh", logger.messages)
 	}
-	want := "since start"
-	for i, message := range logger.messages {
-		if !strings.Contains(message, want) {
-			t.Fatalf("message[%d] = %q, want a lifetime total (%q): without it the counter has no production reader and its accumulation is deletable",
-				i, message, want)
-		}
+	// This refresh drops nothing of its own: the pairs the cap displaces are the
+	// ones the connection path already evicted, so they are no longer live.
+	//
+	// Both figures are anchored in ONE substring, with the separators included.
+	// Checking them apart lets a substring match through — "100 live
+	// reference(s) dropped this refresh" contains "0 live reference(s) dropped
+	// this refresh", so printing the lifetime total in the per-refresh slot
+	// satisfies a bare Contains for zero.
+	want := "pair(s), 0 live reference(s) dropped this refresh, " + strconv.Itoa(churn) + " since start)"
+	if !strings.Contains(logger.messages[1], want) {
+		t.Fatalf("message[1] = %q,\n want it to contain %q.\n This refresh displaced nothing and the connection path displaced %d; swapping either figure for the other hides one of them.",
+			logger.messages[1], want, churn)
 	}
-	if logger.messages[0] == logger.messages[1] {
-		t.Fatalf("lifetime total did not move across two refreshes that displaced every live reference; both lines read %q", logger.messages[0])
+}
+
+// TestDaemon_SetBaselineNilIsSilent covers the boot path taken when the
+// decision log will not parse: loadOrBuildBaseline returns nil and New hands it
+// straight to SetBaseline with the production logger already wired. Nothing had
+// exercised it, so a nil baseline reporting cap pressure would print an alarm
+// at startup on exactly the machine whose log is already broken.
+func TestDaemon_SetBaselineNilIsSilent(t *testing.T) {
+	logger := &recordingDaemonLogger{}
+	d := newDaemonForBaselineTest()
+	d.opts.Logger = logger
+	d.SetBaseline(nil)
+	if len(logger.messages) != 0 {
+		t.Fatalf("SetBaseline(nil) logged %v, want silence: there is no baseline, so there is no cap pressure to report", logger.messages)
 	}
 }

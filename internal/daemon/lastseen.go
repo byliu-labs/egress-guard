@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"container/list"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -157,6 +158,10 @@ func reduceSnapshot(b *drift.Baseline, max int) (candidates []keyedTime, overCap
 // mutex is taken. Nil in production. A test holding the lock can observe it
 // fire, which is the only external evidence that the expensive work really
 // happens outside the locked section — a value assertion cannot tell.
+//
+// It is an unsynchronised package-level var, which is safe only because no test
+// in this package calls t.Parallel(). A parallel test that seeds would race the
+// test that sets this; give it a mutex before adding one.
 var seedReduced func(int)
 
 // seed folds a rebuilt snapshot into the live state without moving a live
@@ -168,6 +173,15 @@ func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
 	candidates, overCap := reduceSnapshot(b, l.max)
 	if seedReduced != nil {
 		seedReduced(len(candidates))
+	}
+	// Nothing to fold in, so do not take the lock at all. mergeLocked has no
+	// empty case: it would copy the live map, sort it and rebuild all three
+	// containers with connection goroutines blocked in at(), for no change to
+	// the retained set. It is not even inert — the rebuild reorders the list
+	// from advance-recency into timestamp order, so a no-op refresh would
+	// change which pair the next eviction reaches for.
+	if len(candidates) == 0 {
+		return 0, overCap
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -184,8 +198,20 @@ func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
 // is written against: the pairs retained are the ones with the newest
 // references, live or historical.
 //
-// Caller must hold l.mu, and candidates must already be bounded by l.max.
+// Caller must hold l.mu, and candidates must already be bounded by l.max —
+// enforced below rather than merely documented. The bound is the whole point of
+// the split: an unreduced slice here means the full unbounded history is sorted
+// and copied with connection goroutines blocked in at(), which is a stall that
+// grows with the machine's lifetime and is invisible to every assertion about
+// the retained set, because the reduction is sound and the retained set comes
+// out identical either way. Only the cost differs, so only a check on the way
+// in can catch it. A violation is a programming error, and this is a security
+// daemon: crash rather than serve from a state we cannot reason about.
 func (l *lastSeen) mergeLocked(candidates []keyedTime) (evicted int) {
+	if len(candidates) > l.max {
+		panic(fmt.Sprintf("daemon: mergeLocked given %d candidates against a %d-pair cap; reduceSnapshot must bound the snapshot before the lock is taken",
+			len(candidates), l.max))
+	}
 	merged := make(map[string]time.Time, len(l.when)+len(candidates))
 	for key, at := range l.when {
 		merged[key] = at

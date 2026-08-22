@@ -626,3 +626,120 @@ func TestLastSeen_DivergesFromReplayOnOutOfOrderCompletion(t *testing.T) {
 			daemon, replay)
 	}
 }
+
+// TestLastSeen_SeedWithNothingToFoldInTakesNoLock pins the empty case out of
+// the locked section. Before seed was split, a nil baseline returned before the
+// lock; the split moved that check into reduceSnapshot, after which seed took
+// the lock and ran a full rebuild against an empty candidate slice — ~1.6ms of
+// pure waste per call with every new TLS connection blocked in at(), in the
+// function whose doc says the stall cannot be reintroduced by moving one line.
+//
+// The waste is the smaller half. mergeLocked rebuilds the LRU list in timestamp
+// order, so a refresh that folds in nothing still reorders advance-recency into
+// timestamp order and changes which pair the next eviction takes.
+func TestLastSeen_SeedWithNothingToFoldInTakesNoLock(t *testing.T) {
+	l := newLastSeen(2)
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	// Advance the later-stamped pair FIRST, so recency order and timestamp
+	// order disagree. advance is monotonic per key, so re-advancing one pair
+	// cannot produce this — it takes two keys moving against their clocks.
+	l.advance("stamped-later", base.Add(time.Hour))
+	l.advance("stamped-earlier", base)
+	// By recency "stamped-later" is now at the back and is next to evict. A
+	// rebuild would reorder by timestamp and put "stamped-earlier" there.
+
+	done := make(chan struct{})
+	l.mu.Lock()
+	go func() {
+		defer close(done)
+		l.seed(nil)
+		l.seed(drift.BuildBaseline(&catalog.Catalog{}, nil))
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		l.mu.Unlock()
+		t.Fatal("seed blocked on the lock with nothing to fold in: the empty case now rebuilds all three containers while connection goroutines wait in at()")
+	}
+	l.mu.Unlock()
+
+	// And it must report no cap pressure. This is the daemon's boot path when
+	// the decision log will not parse: loadOrBuildBaseline returns nil, New
+	// hands that to SetBaseline with the real logger already live, so a garbage
+	// overCap here becomes an alarm printed at startup on exactly the machine
+	// whose log is already broken.
+	if evicted, overCap := l.seed(nil); evicted != 0 || overCap != 0 {
+		t.Errorf("seed(nil) returned evicted=%d overCap=%d, want 0 and 0", evicted, overCap)
+	}
+
+	l.advance("brand-new", base.Add(2*time.Hour))
+	if l.at("stamped-earlier").IsZero() {
+		t.Error("a seed with nothing to fold in reordered the list into timestamp order: the most-recently-advanced pair was evicted instead of the least-recently-advanced one")
+	}
+	if !l.at("stamped-later").IsZero() {
+		t.Error("the least-recently-advanced pair survived eviction; the list is no longer in recency order")
+	}
+}
+
+// TestLastSeen_MergeLockedRejectsAnUnreducedSnapshot pins the cost boundary,
+// which is the one thing no assertion about the retained set can reach. The
+// reduction is sound, so merging the full snapshot instead of the reduced one
+// produces an identical retained set — every ordering, tie-break and eviction
+// assertion passes either way. What changes is that the whole unbounded history
+// is sorted and copied while connection goroutines are blocked in at(),
+// measured at ~40ms per new TLS connection against a 120k-pair history.
+//
+// A seam reporting the slice seed reduced cannot catch this: seed can reduce
+// one slice, report it, and hand a different one to mergeLocked. Only a check
+// on what actually crosses the lock closes it.
+func TestLastSeen_MergeLockedRejectsAnUnreducedSnapshot(t *testing.T) {
+	l := newLastSeen(4)
+	oversized := make([]keyedTime, 5)
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	for i := range oversized {
+		oversized[i] = keyedTime{"pair-" + strconv.Itoa(i), base.Add(time.Duration(i) * time.Second)}
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("mergeLocked accepted a snapshot larger than the cap: the locked section is unbounded again, and no assertion about the retained set can see it")
+		}
+	}()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.mergeLocked(oversized)
+}
+
+// TestLastSeen_AdvanceEntrySkipsAnUnparseableTimestamp pins advanceEntry's
+// parse guard. Without it the zero time is admitted, and because advance
+// pushes a new key to the FRONT of the LRU the bogus pair becomes the
+// best-protected entry in the map — evicting real references ahead of itself
+// while scoring its own pair as first-contact forever.
+func TestLastSeen_AdvanceEntrySkipsAnUnparseableTimestamp(t *testing.T) {
+	// Cap of 3, so the three REAL pairs fit exactly. A smaller cap would evict
+	// the good pair legitimately and the test would pass for the wrong reason.
+	l := newLastSeen(3)
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	good := decisionlog.Entry{
+		Timestamp: base.Format(time.RFC3339), Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "good.example",
+	}
+	bad := decisionlog.Entry{
+		Timestamp: "not-a-timestamp", Decision: decisionlog.DecisionAllow,
+		Exe: "/usr/bin/curl", Host: "bad.example",
+	}
+	l.advanceEntry(good)
+	l.advanceEntry(bad)
+
+	if got := l.at(drift.BaselinePairKey(bad)); !got.IsZero() {
+		t.Fatalf("an entry with an unparseable timestamp entered the live map as %v", got)
+	}
+	// It must not have taken a slot either: with a cap of 3 the three real pairs
+	// fit exactly, so the good one survives only if the bad one was never
+	// admitted.
+	l.advance("second-real-pair", base.Add(time.Hour))
+	l.advance("third-real-pair", base.Add(2*time.Hour))
+	if l.at(drift.BaselinePairKey(good)).IsZero() {
+		t.Error("the good pair was evicted to make room, so the unparseable entry consumed a slot")
+	}
+}

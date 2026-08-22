@@ -250,7 +250,8 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // The daemon captures the prior reference and advances its own live per-pair
 // state when an accepted connection is admitted to the splice, so connections
 // that complete in the order they were stamped give replay the same geometry
-// the daemon used. Two bounds limit that guarantee.
+// the daemon used for the inter-arrival dimension. Three bounds limit that
+// guarantee, and only the first two are about this function's prev argument.
 //
 // The cap. The calibrator's replay map is unbounded; above the daemon's
 // 4096-pair live cap the daemon scores an evicted pair as first-contact using
@@ -265,12 +266,23 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // to one pair can reach the log in dial-completion order rather than timestamp
 // order. lastSeen.advance is monotonic and keeps the newer reference; clouds.add
 // and the calibrator's replay both assign unconditionally and keep whichever
-// line came last in the file. For that pair the two disagree, and the replayed
-// side additionally scores the older connection with unknownInterArrivalSeconds
-// because its timestamp does not follow the reference it is given. Making replay
-// monotonic would close this, and is deliberately not done here: it changes the
-// inter-arrival dimension of every point ever derived, so it belongs with the
-// symmetric-cap question rather than in a doc comment.
+// line came last in the file. Both sides score the older connection itself with
+// unknownInterArrivalSeconds — the daemon captures prev at splice admission,
+// which for the slow-dialing connection is after the faster one already
+// advanced the pair — so the divergence is not in that connection's score but
+// in the reference left behind, and therefore in the NEXT connection to the
+// pair. Making replay monotonic would close it, and is deliberately not done
+// here: it changes the inter-arrival dimension of every point ever derived, so
+// it belongs with the symmetric-cap question rather than in a doc comment.
+//
+// Concurrency. DimConcurrency is not derived from prev and diverges on its own.
+// The daemon samples inflight at accept, before the ClientHello read and before
+// any prompt; the replay derives it from [decision.Timestamp, +flow.DurationMS)
+// and the timestamp is stamped after the prompt returns. For a prompted
+// connection the two intervals differ by however long the human took. See the
+// "Live and derived concurrency do not yet measure the same interval" note in
+// internal/daemon/CLAUDE.md; nothing consumes the completed-flow score yet, and
+// that note is where the fix is tracked.
 func (b *Baseline) ScoreAgainst(id catalog.Identity, host string, joined decisionlog.Joined, prev time.Time, concurrency int) Score {
 	point, ok := PointFrom(joined, prev, concurrency)
 	if !ok {
