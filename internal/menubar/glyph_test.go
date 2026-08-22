@@ -34,6 +34,16 @@ func TestGlyph(t *testing.T) {
 		// than a guess that a restart is in progress and will resolve itself.
 		{"disabled-outranks-restarting", cli.StatusReport{AgentLoaded: true, BootDaemonDisabled: true}, "⚠️", "launchctl enable"},
 		{"unknown-outranks-restarting", cli.StatusReport{AgentLoaded: true, BootDaemonUnknown: true}, "⚠️", "Status unavailable"},
+		// The badge boundary. Every other row uses 3 or 0, so `PendingReviews > 0`
+		// could become `> 1` unnoticed — and one queued binary is the modal case,
+		// since the count is 1 the moment the first upgraded binary is graced.
+		{"pending-badge-at-one", cli.StatusReport{AgentLoaded: true, DaemonPID: 42, PendingReviews: 1}, "🛡️1", "1 updated binaries"},
+		// Both conjuncts of `protected` carry weight. A PID without its loaded
+		// flag must not show the shield: this is the one surface that tells a
+		// user they are protected, so it does not get to infer that from half a
+		// signal, even where the probe makes the state unlikely.
+		{"agent-pid-without-agent-loaded", cli.StatusReport{DaemonPID: 42}, "⛔", ""},
+		{"boot-pid-without-boot-loaded", cli.StatusReport{BootDaemonPID: 42}, "⛔", ""},
 		{"not-protected", cli.StatusReport{}, "⛔", ""},
 	}
 	for _, c := range cases {

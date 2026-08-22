@@ -161,6 +161,14 @@ func (d *Daemon) SetBaseline(b *drift.Baseline) {
 		d.opts.Logger.Errorf("drift: live last-seen is at its %d-pair cap (baseline over by %d pair(s), %d live reference(s) dropped this refresh, %d since start); the calibrator replay is unbounded, so thresholds derived from it no longer apply above the cap",
 			d.lastSeen.max, overCap, evicted, d.lastSeen.evictionCount())
 	}
+	// mergeOverflow can only become non-zero if the snapshot reached the locked
+	// section unreduced, which is a programming error rather than a data
+	// condition. It degrades latency, not the retained set, so it is reported
+	// rather than fatal — but it must never be silent.
+	if overflow := d.lastSeen.mergeOverflowCount(); overflow > 0 && d.opts.Logger != nil {
+		d.opts.Logger.Errorf("drift: %d snapshot pair(s) reached the locked merge unreduced; the pre-lock reduction has been bypassed and every new connection stalls behind the hourly refresh",
+			overflow)
+	}
 	d.baseline.Store(b)
 }
 

@@ -328,13 +328,32 @@ func TestLastSeen_SeedRetainsExactlyTheNewestMaxOfTheMergedSet(t *testing.T) {
 	l.advance(shared, sharedAt)
 	oracle[shared] = sharedAt
 
+	// And one the other way round — snapshot strictly newer than the live
+	// entry, so the merge must take the SNAPSHOT's time. Every other fixture in
+	// this package has live newer than snapshot, leaving half of
+	// merged[k] = max(live, candidate) unasserted. Reachable whenever the log
+	// outruns the live map for a pair: a restored or imported log, or a
+	// backward clock adjustment.
+	staleLive := pairKey(base, 99)
+	l.advance(staleLive, base.Add(-time.Hour))
+	// oracle[staleLive] stays the snapshot's time, set in the loop above.
+
 	l.seed(b)
 
 	expected := make([]keyedTime, 0, len(oracle))
 	for key, at := range oracle {
 		expected = append(expected, keyedTime{key, at})
 	}
-	sort.Slice(expected, func(i, j int) bool { return newestFirst(expected[i], expected[j]) })
+	// Ranked by a comparator written HERE, not by production's newestFirst.
+	// Ranking both sides with the same predicate makes this test invariant to
+	// any change in it — including a full inversion — which is precisely what
+	// a test claiming to pin "the identity of the surviving set" must not be.
+	sort.Slice(expected, func(i, j int) bool {
+		if expected[i].at.Equal(expected[j].at) {
+			return expected[i].key < expected[j].key
+		}
+		return expected[i].at.After(expected[j].at)
+	})
 	want := map[string]time.Time{}
 	for _, e := range expected[:max] {
 		want[e.key] = e.at
@@ -446,6 +465,23 @@ func TestLastSeen_SeedBreaksTimestampTiesDeterministically(t *testing.T) {
 		if !reflect.DeepEqual(first, got) {
 			t.Fatalf("tied pairs retained a different set on attempt %d:\n  %v\n  %v", attempt, first, got)
 		}
+	}
+
+	// Determinism alone does not pin the tie-break: reversing it is equally
+	// deterministic, so the loop above passes against `a.key > b.key`. Name the
+	// survivors. Cap 5 = the newest pair plus the four lexicographically first
+	// of the twenty tied ones, which under a reversed comparator would be
+	// tied-9, -8, -7, -6 instead.
+	want := []string{
+		drift.BaselinePairKeyFor(catalog.Identity{ExeBasename: "curl"}, "newest.example"),
+		drift.BaselinePairKeyFor(catalog.Identity{ExeBasename: "curl"}, "tied-0.example"),
+		drift.BaselinePairKeyFor(catalog.Identity{ExeBasename: "curl"}, "tied-1.example"),
+		drift.BaselinePairKeyFor(catalog.Identity{ExeBasename: "curl"}, "tied-10.example"),
+		drift.BaselinePairKeyFor(catalog.Identity{ExeBasename: "curl"}, "tied-11.example"),
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(first, want) {
+		t.Fatalf("tied pairs retained\n  %v\nwant the lexicographically first four plus the newest\n  %v", first, want)
 	}
 }
 
@@ -681,65 +717,73 @@ func TestLastSeen_SeedWithNothingToFoldInTakesNoLock(t *testing.T) {
 	}
 }
 
-// TestLastSeen_MergeLockedRejectsAnUnreducedSnapshot pins the cost boundary,
-// which is the one thing no assertion about the retained set can reach. The
-// reduction is sound, so merging the full snapshot instead of the reduced one
-// produces an identical retained set — every ordering, tie-break and eviction
-// assertion passes either way. What changes is that the whole unbounded history
-// is sorted and copied while connection goroutines are blocked in at(),
-// measured at ~40ms per new TLS connection against a 120k-pair history.
+// TestLastSeen_MergeLockedBoundsAnUnreducedSnapshot pins the cost boundary,
+// which no assertion about the retained set can reach: the reduction is sound,
+// so merging the full snapshot yields an identical retained set and only the
+// latency differs.
 //
-// A seam reporting the slice seed reduced cannot catch this: seed can reduce
-// one slice, report it, and hand a different one to mergeLocked. Only a check
-// on what actually crosses the lock closes it.
-func TestLastSeen_MergeLockedRejectsAnUnreducedSnapshot(t *testing.T) {
+// It asserts truncation-and-count rather than a panic. Crashing here would take
+// a boot-resident daemon offline while its pf anchor still redirects 443 — a
+// total-egress outage that repeats on every restart — as the response to a
+// latency regression. The counter keeps the mechanical catch without that tail.
+func TestLastSeen_MergeLockedBoundsAnUnreducedSnapshot(t *testing.T) {
 	l := newLastSeen(4)
-	oversized := make([]keyedTime, 5)
+	oversized := make([]keyedTime, 9)
 	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
 	for i := range oversized {
 		oversized[i] = keyedTime{"pair-" + strconv.Itoa(i), base.Add(time.Duration(i) * time.Second)}
 	}
 
-	defer func() {
-		if recover() == nil {
-			t.Fatal("mergeLocked accepted a snapshot larger than the cap: the locked section is unbounded again, and no assertion about the retained set can see it")
-		}
-	}()
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.mergeLocked(oversized)
+	held := len(l.when)
+	l.mu.Unlock()
+
+	if held != 4 {
+		t.Errorf("live map holds %d pairs after an oversized merge, want the %d-pair cap", held, 4)
+	}
+	if got := l.mergeOverflowCount(); got != 5 {
+		t.Errorf("mergeOverflowCount = %d, want 5: the overflow must be counted, or an unreduced snapshot reaches the lock silently", got)
+	}
 }
 
-// TestLastSeen_AdvanceEntrySkipsAnUnparseableTimestamp pins advanceEntry's
-// parse guard. Without it the zero time is admitted, and because advance
-// pushes a new key to the FRONT of the LRU the bogus pair becomes the
-// best-protected entry in the map — evicting real references ahead of itself
-// while scoring its own pair as first-contact forever.
-func TestLastSeen_AdvanceEntrySkipsAnUnparseableTimestamp(t *testing.T) {
-	// Cap of 3, so the three REAL pairs fit exactly. A smaller cap would evict
-	// the good pair legitimately and the test would pass for the wrong reason.
-	l := newLastSeen(3)
-	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
-	good := decisionlog.Entry{
-		Timestamp: base.Format(time.RFC3339), Decision: decisionlog.DecisionAllow,
-		Exe: "/usr/bin/curl", Host: "good.example",
+// TestLastSeen_SeedNeverOverflowsTheLockedMerge is the half that catches a real
+// regression. The test above proves mergeLocked copes when handed too much;
+// this proves seed never hands it too much. Without it, reducing one slice and
+// passing a different one to mergeLocked is invisible — the retained set is
+// identical either way.
+func TestLastSeen_SeedNeverOverflowsTheLockedMerge(t *testing.T) {
+	b, _ := overCapacityBaseline(t, 25*maxLiveLastSeenPairs)
+	l := newLastSeen(maxLiveLastSeenPairs)
+	l.seed(b)
+	if got := l.mergeOverflowCount(); got != 0 {
+		t.Fatalf("mergeOverflowCount = %d after a normal seed, want 0: %d pairs crossed into the locked section unreduced, stalling every new TLS connection behind the refresh",
+			got, got)
 	}
-	bad := decisionlog.Entry{
-		Timestamp: "not-a-timestamp", Decision: decisionlog.DecisionAllow,
-		Exe: "/usr/bin/curl", Host: "bad.example",
-	}
-	l.advanceEntry(good)
-	l.advanceEntry(bad)
+}
 
-	if got := l.at(drift.BaselinePairKey(bad)); !got.IsZero() {
-		t.Fatalf("an entry with an unparseable timestamp entered the live map as %v", got)
+// TestLastSeen_AdvanceAtAnEqualTimeDoesNotRefront pins advance's equality
+// boundary. TestLastSeen_AdvanceIsMonotonic only ever supplies a strictly
+// earlier timestamp, so it cannot tell `!at.After(previous)` from
+// `at.Before(previous)` — the two differ only when the times are equal.
+//
+// Equal must NOT re-front. Decision-log timestamps are second-resolution, so
+// two connections to one pair inside the same second are ordinary; treating the
+// second as fresh activity lets a repeated or replayed entry rescue a pair from
+// eviction and changes which pair the next eviction takes.
+func TestLastSeen_AdvanceAtAnEqualTimeDoesNotRefront(t *testing.T) {
+	l := newLastSeen(2)
+	base := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	l.advance("first", base)
+	l.advance("second", base.Add(time.Second))
+	// "first" is now least-recently-advanced and next to evict.
+	l.advance("first", base) // identical timestamp: must be a no-op
+	l.advance("third", base.Add(2*time.Second))
+
+	if !l.at("first").IsZero() {
+		t.Error("re-advancing a pair at its existing timestamp rescued it from eviction; equal time is being treated as fresh activity")
 	}
-	// It must not have taken a slot either: with a cap of 3 the three real pairs
-	// fit exactly, so the good one survives only if the bad one was never
-	// admitted.
-	l.advance("second-real-pair", base.Add(time.Hour))
-	l.advance("third-real-pair", base.Add(2*time.Hour))
-	if l.at(drift.BaselinePairKey(good)).IsZero() {
-		t.Error("the good pair was evicted to make room, so the unparseable entry consumed a slot")
+	if l.at("second").IsZero() {
+		t.Error("the more recently advanced pair was evicted instead")
 	}
 }

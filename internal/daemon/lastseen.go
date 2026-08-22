@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"container/list"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -23,6 +22,10 @@ type lastSeen struct {
 	order     *list.List
 	entries   map[string]*list.Element
 	evictions uint64
+	// mergeOverflow counts candidates mergeLocked had to drop because its caller
+	// handed it more than the cap. Non-zero means the pre-lock reduction was
+	// bypassed; see mergeLocked.
+	mergeOverflow uint64
 }
 
 func newLastSeen(max int) *lastSeen {
@@ -92,6 +95,15 @@ func (l *lastSeen) evictionCount() uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.evictions
+}
+
+// mergeOverflowCount is the lifetime number of candidates dropped because
+// mergeLocked was handed more than the cap. It must stay zero: a non-zero value
+// means the snapshot reached the locked section unreduced.
+func (l *lastSeen) mergeOverflowCount() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.mergeOverflow
 }
 
 // keyedTime pairs a live key with its reference time so a snapshot can be
@@ -203,17 +215,24 @@ func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
 //
 // Caller must hold l.mu, and candidates must already be bounded by l.max —
 // enforced below rather than merely documented. The bound is the whole point of
-// the split: an unreduced slice here means the full unbounded history is sorted
-// and copied with connection goroutines blocked in at(), which is a stall that
-// grows with the machine's lifetime and is invisible to every assertion about
-// the retained set, because the reduction is sound and the retained set comes
-// out identical either way. Only the cost differs, so only a check on the way
-// in can catch it. A violation is a programming error, and this is a security
-// daemon: crash rather than serve from a state we cannot reason about.
+// the split: an unreduced slice here means the history is merged with
+// connection goroutines blocked in at(), a stall that grows with the machine's
+// lifetime and is invisible to every assertion about the retained set, because
+// the reduction is sound and the retained set comes out identical either way.
+// Only the cost differs, so only a check on the way in can catch it.
+//
+// It truncates and counts rather than panicking. The invariant is about COST,
+// not correctness: refusing to serve is disproportionate to a latency
+// regression, and the blast radius is asymmetric — a panic in the hourly
+// refresher exits a boot-resident daemon whose pf anchor still redirects 443,
+// so every outbound TLS connection on the machine fails until launchd restarts
+// it, whereupon the next refresh panics again. That outage loop is worse than
+// the stall it would prevent. mergeOverflow keeps the mechanical catch;
+// SetBaseline reports it.
 func (l *lastSeen) mergeLocked(candidates []keyedTime) (evicted int) {
 	if len(candidates) > l.max {
-		panic(fmt.Sprintf("daemon: mergeLocked given %d candidates against a %d-pair cap; reduceSnapshot must bound the snapshot before the lock is taken",
-			len(candidates), l.max))
+		l.mergeOverflow += uint64(len(candidates) - l.max)
+		candidates = candidates[:l.max]
 	}
 	merged := make(map[string]time.Time, len(l.when)+len(candidates))
 	for key, at := range l.when {

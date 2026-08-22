@@ -249,6 +249,17 @@ func TestDaemon_SetBaselineReportsLiveEvictionsTheBaselineDidNotCause(t *testing
 		t.Fatalf("logger messages = %v, want one line: %d live reference(s) were dropped and the operator was told nothing",
 			logger.messages, d.lastSeen.evictionCount())
 	}
+	// Both figures pinned on a refresh that displaces the whole live map, which
+	// is the case the sibling test cannot cover: there the reporting refresh
+	// evicts nothing of its own, so the lifetime total is identical whether it
+	// is read before or after the seed. Here they are equal and non-zero, which
+	// is only true if the lifetime figure is read AFTER the seed.
+	n := strconv.Itoa(maxLiveLastSeenPairs)
+	want := "pair(s), " + n + " live reference(s) dropped this refresh, " + n + " since start)"
+	if !strings.Contains(logger.messages[0], want) {
+		t.Fatalf("message = %q,\n want it to contain %q.\n A lifetime total read before the seed omits exactly this refresh's drops, and the log line is the counter's only production reader.",
+			logger.messages[0], want)
+	}
 }
 
 // TestDaemon_SetBaselineReportsLifetimeEvictions keeps the lifetime counter
