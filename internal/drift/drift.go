@@ -250,8 +250,11 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // The daemon captures the prior reference and advances its own live per-pair
 // state when an accepted connection is admitted to the splice, so connections
 // that complete in the order they were stamped give replay the same geometry
-// the daemon used for the inter-arrival dimension. Three bounds limit that
-// guarantee, and only the first two are about this function's prev argument.
+// the daemon used for the inter-arrival dimension. Four bounds limit that
+// guarantee: three on this function's prev argument, and one on concurrency,
+// which is not derived from prev at all. Six of the nine dimensions are exempt
+// by construction — bytes, ratio, duration, hour and user-active all come from
+// the same decision and flow records the daemon writes and the replay reads.
 //
 // The cap. The calibrator's replay map is unbounded; above the daemon's
 // 4096-pair live cap the daemon scores an evicted pair as first-contact using
@@ -275,11 +278,26 @@ func (b *Baseline) ScoreLive(id catalog.Identity, host string, joined decisionlo
 // here: it changes the inter-arrival dimension of every point ever derived, so
 // it belongs with the symmetric-cap question rather than in a doc comment.
 //
-// Concurrency. DimConcurrency is not derived from prev and diverges on its own.
-// The daemon samples inflight at accept, before the ClientHello read and before
-// any prompt; the replay derives it from [decision.Timestamp, +flow.DurationMS)
-// and the timestamp is stamped after the prompt returns. For a prompted
-// connection the two intervals differ by however long the human took. See the
+// Discarded log writes. All four accept paths advance the live reference and
+// then discard the write error (`_ = d.opts.Log.Write(entry)`). When the write
+// fails the daemon has moved to t and the replay never sees the line, so it
+// never advances — and because the seed merge is monotonic the daemon never
+// rolls back, making the divergence permanent rather than a single refresh's.
+// SetBaseline's own comment relies on this shape being reachable. Advancing
+// only after a successful write would close it, and is a decision-path change
+// that needs its own threat-model argument, not a doc-comment edit.
+//
+// Concurrency. DimConcurrency is not derived from prev and diverges on its own,
+// because the daemon samples inflight at accept while the replay reconstructs
+// intervals from the log. Three mechanisms, and the first two hit ordinary
+// unprompted connections: a connection with no flow record or a non-positive
+// duration is modelled by BuildConcurrencyIndex as a zero-width instant, while
+// inflight counted it for its whole open life — a client that stalls in the
+// ClientHello read holds a slot for the full clientHelloDeadline and every
+// denial is invisible; RFC3339 is second-granularity, so sub-second connections
+// that genuinely overlap need not overlap in the derived index; and for a
+// prompted connection the decision timestamp is stamped after the prompt
+// returns, so the two intervals differ by however long the human took. See the
 // "Live and derived concurrency do not yet measure the same interval" note in
 // internal/daemon/CLAUDE.md; nothing consumes the completed-flow score yet, and
 // that note is where the fix is tracked.

@@ -169,7 +169,10 @@ var seedReduced func(int)
 // returns the number of live references it had to drop, and how far the
 // snapshot exceeds the live cap.
 func (l *lastSeen) seed(b *drift.Baseline) (evicted, overCap int) {
-	// max is written once, in newLastSeen, and never again.
+	// max is written once, in newLastSeen, and never again — and is at least 1,
+	// which is what makes the empty-candidate return below provably report no
+	// cap pressure: overCap is computed before truncation, and truncating to
+	// [:max] with max >= 1 cannot empty a non-empty slice.
 	candidates, overCap := reduceSnapshot(b, l.max)
 	if seedReduced != nil {
 		seedReduced(len(candidates))
