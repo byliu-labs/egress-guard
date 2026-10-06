@@ -9,9 +9,10 @@ import (
 // Stub returns canned ProcInfo for tests. Map key is the connection's local
 // addr (`conn.LocalAddr().String()`). If empty, the zero ProcInfo is returned.
 type Stub struct {
-	mu    sync.Mutex
-	byKey map[string]ProcInfo
-	err   error
+	mu               sync.Mutex
+	byKey            map[string]ProcInfo
+	err              error
+	lastOriginalDest *net.TCPAddr
 }
 
 func NewStub() *Stub { return &Stub{byKey: map[string]ProcInfo{}} }
@@ -28,9 +29,16 @@ func (s *Stub) SetErr(err error) {
 	s.err = err
 }
 
-func (s *Stub) LookupConn(conn net.Conn) (ProcInfo, error) {
+func (s *Stub) LastOriginalDest() *net.TCPAddr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.lastOriginalDest
+}
+
+func (s *Stub) LookupConn(conn net.Conn, origDst *net.TCPAddr) (ProcInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastOriginalDest = origDst
 	if s.err != nil {
 		return ProcInfo{}, s.err
 	}

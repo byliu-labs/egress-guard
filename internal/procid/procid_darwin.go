@@ -25,27 +25,25 @@ func defaultLookup() Lookup { return &darwinLookup{} }
 
 type darwinLookup struct{}
 
-// LookupConn finds the client process by matching the connection's REMOTE
-// 4-tuple (= client process's LOCAL socket) against `lsof`'s established
-// TCP table. proc_pidpath then resolves the pid to an executable path.
+// LookupConn finds the client process by matching its socket's peer address
+// and original destination against `lsof`'s established TCP table.
 //
 // Why lsof: darwin has no equivalent of linux's SO_PEERCRED for AF_INET, and
 // LOCAL_PEERPID is AF_UNIX-only. proc_pidfdinfo would let us avoid the shellout
 // but requires walking every pid × every fd; lsof does that walk in C and is
 // part of the base system. Cost is ~50-200ms per call; only paid on
 // unknown-host paths (allowlisted hosts hit the daemon's faster path).
-func (d *darwinLookup) LookupConn(conn net.Conn) (ProcInfo, error) {
+func (d *darwinLookup) LookupConn(conn net.Conn, origDst *net.TCPAddr) (ProcInfo, error) {
 	tcp, ok := conn.(*net.TCPConn)
 	if !ok {
 		return ProcInfo{}, errors.New("procid darwin: expected *net.TCPConn")
 	}
 	rAddr, _ := tcp.RemoteAddr().(*net.TCPAddr)
-	lAddr, _ := tcp.LocalAddr().(*net.TCPAddr)
-	if rAddr == nil || lAddr == nil {
+	if rAddr == nil || origDst == nil {
 		return ProcInfo{}, errors.New("procid darwin: connection missing addrs")
 	}
 
-	pid, comm, err := lsofLookup(rAddr, lAddr)
+	pid, comm, err := lsofLookup(rAddr, origDst)
 	if err != nil {
 		return ProcInfo{}, err
 	}
@@ -67,8 +65,7 @@ func (d *darwinLookup) LookupConn(conn net.Conn) (ProcInfo, error) {
 }
 
 // lsofLookup runs `lsof -nP -iTCP -sTCP:ESTABLISHED -F pcn` and parses for an
-// ESTABLISHED entry whose NAME matches `<rAddr>-><lAddr>` (i.e., the client
-// process's local-side socket points at the daemon's listener). Returns
+// ESTABLISHED entry whose NAME matches `<rAddr>-><origDst>`. Returns
 // pid + command name; ProcInfo's other fields are filled by the caller.
 //
 // The -F output format is one field per line, prefixed by a single character:
@@ -78,14 +75,10 @@ func (d *darwinLookup) LookupConn(conn net.Conn) (ProcInfo, error) {
 //	f<fd>
 //	t<type>     ("IPv4")
 //	P<proto>    ("TCP")
-//	n<name>     ("127.0.0.1:55555->127.0.0.1:8443")
+//	n<name>     ("192.168.1.5:51000->104.20.23.154:443")
 //
 // `f`/`t`/`P`/`n` repeat per fd within the same `p`/`c` process block.
-func lsofLookup(rAddr, lAddr *net.TCPAddr) (int, string, error) {
-	target := net.JoinHostPort(rAddr.IP.String(), strconv.Itoa(rAddr.Port)) +
-		"->" +
-		net.JoinHostPort(lAddr.IP.String(), strconv.Itoa(lAddr.Port))
-
+func lsofLookup(rAddr, origDst *net.TCPAddr) (int, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), shelloutTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn")
@@ -94,6 +87,12 @@ func lsofLookup(rAddr, lAddr *net.TCPAddr) (int, string, error) {
 	if err != nil {
 		return 0, "", fmt.Errorf("lsof: %w", err)
 	}
+	return parseLsof(out, rAddr, origDst)
+}
+
+func parseLsof(out []byte, rAddr, origDst *net.TCPAddr) (int, string, error) {
+	target := net.JoinHostPort(rAddr.IP.String(), strconv.Itoa(rAddr.Port)) +
+		"->" + net.JoinHostPort(origDst.IP.String(), strconv.Itoa(origDst.Port))
 
 	var curPID int
 	var curComm string

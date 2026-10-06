@@ -14,7 +14,7 @@ func TestStub_KeyByLocalAddr(t *testing.T) {
 	defer c2.Close()
 
 	// net.Pipe addrs aren't real TCP — verify we get the zero value when key absent.
-	got, err := s.LookupConn(c1)
+	got, err := s.LookupConn(c1, nil)
 	if err == nil && got.PID != 0 {
 		t.Errorf("LookupConn(net.Pipe) = %+v, want zero", got)
 	}
