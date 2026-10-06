@@ -47,6 +47,19 @@ func TestDarwin_AppleSystemBinaryNormalizesTeamID(t *testing.T) {
 	}
 }
 
+func TestDarwin_NormalizesNewMacOSSoftwareSigningAuthority(t *testing.T) {
+	out := []byte("TeamIdentifier=not set\nAuthority=macOS Software Signing\nAuthority=Apple Code Signing Certification Authority\nAuthority=Apple Root CA\n")
+	got := (&darwinVerifier{}).normalizeAppleSystemTeamID(out, SignedIdentity{Valid: true, TeamID: "not set"})
+	if got.TeamID != "APPLE" {
+		t.Fatalf("TeamID=%q, want APPLE for current macOS signing chain", got.TeamID)
+	}
+	withoutCA := []byte("TeamIdentifier=not set\nAuthority=macOS Software Signing\nAuthority=Unrelated CA\n")
+	got = (&darwinVerifier{}).normalizeAppleSystemTeamID(withoutCA, SignedIdentity{Valid: true, TeamID: "not set"})
+	if got.TeamID == "APPLE" {
+		t.Fatal("normalized a non-Apple certificate chain")
+	}
+}
+
 func TestDarwin_VerifyUnsignedBinary(t *testing.T) {
 	tmp, _ := os.CreateTemp("", "unsigned-*")
 	tmp.WriteString("#!/bin/sh\necho hi\n")
