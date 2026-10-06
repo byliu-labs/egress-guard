@@ -70,7 +70,8 @@ func (d *darwinVerifier) Verify(exe string) (SignedIdentity, error) {
 //
 // Detection: Apple system binaries are signed by the chain
 //
-//	"Software Signing" -> "Apple Code Signing Certification Authority" -> "Apple Root CA"
+//	"Software Signing" (or "macOS Software Signing") ->
+//	"Apple Code Signing Certification Authority" -> "Apple Root CA"
 //
 // We require the first two Authority lines to be present.
 func (d *darwinVerifier) normalizeAppleSystemTeamID(out []byte, id SignedIdentity) SignedIdentity {
@@ -80,7 +81,7 @@ func (d *darwinVerifier) normalizeAppleSystemTeamID(out []byte, id SignedIdentit
 	var hasSoftwareSigning, hasAppleCA bool
 	for _, m := range reAuthority.FindAllStringSubmatch(string(out), -1) {
 		switch m[1] {
-		case "Software Signing":
+		case "Software Signing", "macOS Software Signing":
 			hasSoftwareSigning = true
 		case "Apple Code Signing Certification Authority":
 			hasAppleCA = true
