@@ -4,6 +4,7 @@ package signature
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -40,7 +41,22 @@ func TestDarwin_AppleSystemBinaryNormalizesTeamID(t *testing.T) {
 		t.Errorf("trustd not valid")
 	}
 	if id.TeamID != "APPLE" {
+		out, detailsErr := exec.Command("codesign", "-dvv", "--", "/usr/libexec/trustd").CombinedOutput()
+		t.Logf("codesign details (err=%v): %s", detailsErr, out)
 		t.Errorf("TeamID = %q, want APPLE (Apple system binary normalization)", id.TeamID)
+	}
+}
+
+func TestDarwin_NormalizesNewMacOSSoftwareSigningAuthority(t *testing.T) {
+	out := []byte("TeamIdentifier=not set\nAuthority=macOS Software Signing\nAuthority=Apple Code Signing Certification Authority\nAuthority=Apple Root CA\n")
+	got := (&darwinVerifier{}).normalizeAppleSystemTeamID(out, SignedIdentity{Valid: true, TeamID: "not set"})
+	if got.TeamID != "APPLE" {
+		t.Fatalf("TeamID=%q, want APPLE for current macOS signing chain", got.TeamID)
+	}
+	withoutCA := []byte("TeamIdentifier=not set\nAuthority=macOS Software Signing\nAuthority=Unrelated CA\n")
+	got = (&darwinVerifier{}).normalizeAppleSystemTeamID(withoutCA, SignedIdentity{Valid: true, TeamID: "not set"})
+	if got.TeamID == "APPLE" {
+		t.Fatal("normalized a non-Apple certificate chain")
 	}
 }
 
