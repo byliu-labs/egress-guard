@@ -6,7 +6,14 @@
 // OpenSnitch config-pack rather than a daemon port; see issue #11.
 package kernel
 
-import "net"
+import (
+	"errors"
+	"net"
+)
+
+// ErrAnchorUnreachable means the leaf has redirect rules but the loaded main
+// ruleset has no path to it.
+var ErrAnchorUnreachable = errors.New("kernel: egress-guard anchor is loaded but unreachable")
 
 // RulesInstaller is implemented by pf (darwin) and a stub on non-darwin.
 type RulesInstaller interface {

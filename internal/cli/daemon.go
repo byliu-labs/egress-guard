@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -229,16 +230,24 @@ func Stop(args []string) error {
 func Status(args []string) error {
 	k := kernel.Default()
 	installed, err := k.IsInstalled()
-	switch {
-	case err != nil:
-		fmt.Printf("kernel rules: unknown (%v — try `sudo egress-guard status`)\n", err)
-	case installed:
-		fmt.Println("kernel rules: INSTALLED")
-	default:
-		fmt.Println("kernel rules: NOT installed (run `sudo egress-guard install`)")
-	}
+	declared, declErr := anchorDeclared()
+	writeKernelStatus(os.Stdout, installed, err, declared, declErr)
 	printLogFootprint(os.Stdout)
 	return printPlatformStatus(os.Stdout)
+}
+
+func writeKernelStatus(w io.Writer, installed bool, err error, declared bool, declErr error) {
+	switch {
+	case errors.Is(err, kernel.ErrAnchorUnreachable), declErr == nil && !declared:
+		fmt.Fprintln(w, "kernel rules: NOT protected — /etc/pf.conf never traverses the egress-guard anchor")
+		fmt.Fprintln(w, "  Fix: sudo egress-guard install")
+	case err != nil:
+		fmt.Fprintf(w, "kernel rules: unknown (%v — try `sudo egress-guard status`)\n", err)
+	case installed:
+		fmt.Fprintln(w, "kernel rules: INSTALLED")
+	default:
+		fmt.Fprintln(w, "kernel rules: NOT installed (run `sudo egress-guard install`)")
+	}
 }
 
 func userAllowlistPath() (string, error) {
