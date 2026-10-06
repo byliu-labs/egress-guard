@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -41,6 +42,8 @@ const launchDaemonTemplate = `<?xml version="1.0" encoding="UTF-8"?>
         <string>{{HOME}}</string>
         <key>PATH</key>
         <string>{{SYSPATH}}</string>
+        <key>EGRESS_GUARD_REJECTION_PATH</key>
+        <string>{{REJECTIONS}}</string>
     </dict>
     <key>StandardOutPath</key>
     <string>{{STATE}}/daemon.log</string>
@@ -70,7 +73,7 @@ func systemBaselineCatalogPath() (string, error) {
 	return filepath.Join(systemStateHome, ".config", "egress-guard", "catalog-baseline.toml"), nil
 }
 
-func renderLaunchDaemonPlist(binPath string, port int, state string) string {
+func renderLaunchDaemonPlist(binPath string, port int, state, rejections string) string {
 	return strings.NewReplacer(
 		"{{LABEL}}", launchDaemonLabel,
 		"{{BINARY}}", binPath,
@@ -78,7 +81,27 @@ func renderLaunchDaemonPlist(binPath string, port int, state string) string {
 		"{{STATE}}", state,
 		"{{HOME}}", systemStateHome,
 		"{{SYSPATH}}", systemToolsPATH,
+		"{{REJECTIONS}}", xmlEscapeText(rejections),
 	).Replace(launchDaemonTemplate)
+}
+
+func xmlEscapeText(value string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;").Replace(value)
+}
+
+func installingUserRejectionPath() (string, error) {
+	if os.Getenv("EGRESS_GUARD_REJECTION_PATH") != "" {
+		return RejectedPairsPath()
+	}
+	name := os.Getenv("SUDO_USER")
+	if name == "" || name == "root" {
+		return "", fmt.Errorf("install needs the target user's home: run via sudo from that user or set EGRESS_GUARD_REJECTION_PATH")
+	}
+	owner, err := user.Lookup(name)
+	if err != nil {
+		return "", fmt.Errorf("look up installing user %q: %w", name, err)
+	}
+	return filepath.Join(owner.HomeDir, ".config", "egress-guard", "rejected-pairs.jsonl"), nil
 }
 
 func writeAndBootstrapLaunchDaemonPlist(path string, plist []byte, bootstrap func(string) ([]byte, error)) error {
@@ -136,6 +159,10 @@ var launchctlBootstrap = func(path string) ([]byte, error) {
 }
 
 func installLaunchDaemon(port int) error {
+	rejectionPath, err := installingUserRejectionPath()
+	if err != nil {
+		return err
+	}
 	binPath, err := os.Executable()
 	if err != nil {
 		return err
@@ -149,7 +176,7 @@ func installLaunchDaemon(port int) error {
 		return fmt.Errorf("launchdaemon: create state dir: %w", err)
 	}
 
-	plist := renderLaunchDaemonPlist(binPath, port, state)
+	plist := renderLaunchDaemonPlist(binPath, port, state, rejectionPath)
 	if err := os.MkdirAll(filepath.Dir(launchDaemonPlistPath), 0o755); err != nil {
 		return fmt.Errorf("launchdaemon: create %s: %w", filepath.Dir(launchDaemonPlistPath), err)
 	}

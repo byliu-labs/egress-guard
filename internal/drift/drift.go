@@ -40,12 +40,14 @@ const (
 
 // Baseline is a per-machine model of normal identity/destination pairs.
 type Baseline struct {
-	cat          *catalog.Catalog
-	identities   map[string]bool
-	hosts        map[string]bool
-	pairs        map[string]bool
-	clouds       *clouds
-	builtThrough time.Time
+	cat             *catalog.Catalog
+	identities      map[string]bool
+	hosts           map[string]bool
+	pairs           map[string]bool
+	learned         map[string]*LearnedPair
+	rejectionDigest string
+	clouds          *clouds
+	builtThrough    time.Time
 }
 
 // Event is the result of classifying one decisionlog.Entry against a Baseline.
@@ -73,7 +75,8 @@ const minStableDays = 2
 // was egressing while live points carry real values — the two would be scored
 // against each other in different geometries. Older snapshots rebuild from the
 // decision log instead.
-const baselineSchemaVersion = 5
+const baselineSchemaVersion = 6
+const EmptyRejectionDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 const (
 	rankNeverHit         = 4
@@ -89,24 +92,41 @@ type pairStats struct {
 }
 
 type baselineSnapshot struct {
-	SchemaVersion int                `json:"schema_version"`
-	BuiltThrough  string             `json:"built_through"`
-	Identities    []string           `json:"identities"`
-	Hosts         []string           `json:"hosts"`
-	Pairs         []string           `json:"pairs"`
-	CloudPoints   map[string][]Point `json:"cloud_points,omitempty"`
-	CloudLast     map[string]string  `json:"cloud_last,omitempty"`
-	CloudMeta     map[string]Pair    `json:"cloud_meta"`
+	SchemaVersion   int                `json:"schema_version"`
+	BuiltThrough    string             `json:"built_through"`
+	Identities      []string           `json:"identities"`
+	Hosts           []string           `json:"hosts"`
+	Pairs           []string           `json:"pairs"`
+	CloudPoints     map[string][]Point `json:"cloud_points,omitempty"`
+	CloudLast       map[string]string  `json:"cloud_last,omitempty"`
+	CloudMeta       map[string]Pair    `json:"cloud_meta"`
+	Learned         []LearnedPair      `json:"learned"`
+	RejectionDigest string             `json:"rejection_digest"`
 }
 
 // BuildBaseline folds decision-log history into stable normal traffic. Only
 // allow and observe decisions teach the baseline; deny decisions never do.
 func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline {
+	return BuildBaselineWithRejections(cat, entries, nil)
+}
+
+// RejectionSet removes explicitly disowned pairs from every derived baseline view.
+type RejectionSet interface {
+	Contains(exeBasename, exeSHA256, teamID, host string) bool
+	Digest() string
+}
+
+func BuildBaselineWithRejections(cat *catalog.Catalog, entries []decisionlog.Entry, rej RejectionSet) *Baseline {
 	b := &Baseline{
-		cat:        cat,
-		identities: map[string]bool{},
-		hosts:      map[string]bool{},
-		pairs:      map[string]bool{},
+		cat:             cat,
+		identities:      map[string]bool{},
+		hosts:           map[string]bool{},
+		pairs:           map[string]bool{},
+		learned:         map[string]*LearnedPair{},
+		rejectionDigest: EmptyRejectionDigest,
+	}
+	if rej != nil {
+		b.rejectionDigest = rej.Digest()
 	}
 	byPair := map[string]*pairStats{}
 	var latest time.Time
@@ -115,7 +135,15 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 		if !FoldsIntoBaseline(e) {
 			continue
 		}
-		id := identityKey(IdentityFromEntry(e))
+		ts, tsErr := time.Parse(time.RFC3339, e.Timestamp)
+		if tsErr == nil && ts.After(latest) {
+			latest = ts
+		}
+		identity := IdentityFromEntry(e)
+		if rej != nil && rej.Contains(identity.ExeBasename, identity.ExeSHA256, identity.TeamID, e.Host) {
+			continue
+		}
+		id := identityKey(identity)
 		host := hostKey(e.Host)
 		pair := pairKey(id, host)
 		stats, ok := byPair[pair]
@@ -123,11 +151,8 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 			stats = &pairStats{days: map[string]bool{}, id: id, host: host}
 			byPair[pair] = stats
 		}
-		if ts, err := time.Parse(time.RFC3339, e.Timestamp); err == nil {
+		if tsErr == nil {
 			stats.days[ts.UTC().Format("2006-01-02")] = true
-			if ts.After(latest) {
-				latest = ts
-			}
 		}
 	}
 
@@ -148,7 +173,14 @@ func BuildBaseline(cat *catalog.Catalog, entries []decisionlog.Entry) *Baseline 
 			continue
 		}
 		identity := IdentityFromEntry(joined.Decision)
-		b.clouds.add(pairKey(identityKey(identity), hostKey(joined.Decision.Host)), identity, joined.Decision.Host, joined, concurrency)
+		if rej != nil && rej.Contains(identity.ExeBasename, identity.ExeSHA256, identity.TeamID, joined.Decision.Host) {
+			continue
+		}
+		key := pairKey(identityKey(identity), hostKey(joined.Decision.Host))
+		b.clouds.add(key, identity, joined.Decision.Host, joined, concurrency)
+		if ts, err := time.Parse(time.RFC3339, joined.Decision.Timestamp); err == nil {
+			b.observeLearned(key, identity, joined.Decision.Host, ts)
+		}
 	}
 	b.clouds.finish()
 	return b
@@ -301,6 +333,8 @@ func (b *Baseline) BuiltThrough() time.Time {
 	return b.builtThrough
 }
 
+func (b *Baseline) RejectionDigest() string { return b.rejectionDigest }
+
 // IsStale reports whether entries contain traffic newer than this baseline.
 func (b *Baseline) IsStale(entries []decisionlog.Entry) bool {
 	for _, e := range entries {
@@ -318,14 +352,16 @@ func (b *Baseline) IsStale(entries []decisionlog.Entry) bool {
 // Save persists the folded baseline maps as a recompute-on-stale cache.
 func (b *Baseline) Save(path string) error {
 	snap := baselineSnapshot{
-		SchemaVersion: baselineSchemaVersion,
-		BuiltThrough:  b.builtThrough.UTC().Format(time.RFC3339),
-		Identities:    sortedKeys(b.identities),
-		Hosts:         sortedKeys(b.hosts),
-		Pairs:         sortedKeys(b.pairs),
-		CloudPoints:   b.clouds.points,
-		CloudLast:     cloudLastStrings(b.clouds),
-		CloudMeta:     b.clouds.meta,
+		SchemaVersion:   baselineSchemaVersion,
+		BuiltThrough:    b.builtThrough.UTC().Format(time.RFC3339),
+		Identities:      sortedKeys(b.identities),
+		Hosts:           sortedKeys(b.hosts),
+		Pairs:           sortedKeys(b.pairs),
+		CloudPoints:     b.clouds.points,
+		CloudLast:       cloudLastStrings(b.clouds),
+		CloudMeta:       b.clouds.meta,
+		Learned:         b.Learned(),
+		RejectionDigest: b.rejectionDigest,
 	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
@@ -378,12 +414,14 @@ func LoadBaseline(path string, cat *catalog.Catalog) (*Baseline, error) {
 	}
 	cloud.finish()
 	return &Baseline{
-		cat:          cat,
-		identities:   sliceToSet(snap.Identities),
-		hosts:        sliceToSet(snap.Hosts),
-		pairs:        sliceToSet(snap.Pairs),
-		clouds:       cloud,
-		builtThrough: builtThrough,
+		cat:             cat,
+		identities:      sliceToSet(snap.Identities),
+		hosts:           sliceToSet(snap.Hosts),
+		pairs:           sliceToSet(snap.Pairs),
+		learned:         learnedFromSlice(snap.Learned),
+		rejectionDigest: snap.RejectionDigest,
+		clouds:          cloud,
+		builtThrough:    builtThrough,
 	}, nil
 }
 

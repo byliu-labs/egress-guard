@@ -87,6 +87,7 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("log entries:              %d\n", rep.Entries)
+	fmt.Println("rejections:              not applied")
 	fmt.Printf("connections:              %d\n", rep.Connections)
 	fmt.Printf("pairs with a cloud:       %d\n", rep.Pairs)
 	fmt.Printf("points in clouds:         %d\n", rep.Points)
