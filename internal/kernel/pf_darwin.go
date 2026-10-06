@@ -21,6 +21,10 @@ const anchorName = "egress-guard"
 // anchorFilePath is where we write the anchor's rule set.
 const anchorFilePath = "/etc/pf.anchors/egress-guard"
 
+var runPfctl = func(args ...string) ([]byte, error) {
+	return exec.Command("pfctl", args...).CombinedOutput()
+}
+
 type pfDarwin struct{}
 
 func defaultInstaller() RulesInstaller { return &pfDarwin{} }
@@ -64,21 +68,50 @@ func (p *pfDarwin) Uninstall() error {
 }
 
 func (p *pfDarwin) IsInstalled() (bool, error) {
-	if _, err := os.Stat(anchorFilePath); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	cmd := exec.Command("pfctl", "-a", anchorName, "-sn")
-	out, err := cmd.CombinedOutput()
+	out, err := runPfctl("-a", anchorName, "-sn")
 	if err != nil {
 		if strings.Contains(string(out), "No such anchor") {
 			return false, nil
 		}
 		return false, fmt.Errorf("kernel: pfctl -sn: %w", err)
 	}
-	return strings.Contains(string(out), "rdr"), nil
+	if !strings.Contains(string(out), "rdr") {
+		return false, nil
+	}
+	nat, err := runPfctl("-s", "nat")
+	if err != nil {
+		return false, fmt.Errorf("kernel: pfctl -s nat: %w (output: %s)", err, nat)
+	}
+	rules, err := runPfctl("-s", "rules")
+	if err != nil {
+		return false, fmt.Errorf("kernel: pfctl -s rules: %w (output: %s)", err, rules)
+	}
+	if !loadedAnchorDeclared(string(nat), "rdr-anchor", anchorName) || !loadedAnchorDeclared(string(rules), "anchor", anchorName) {
+		return false, ErrAnchorUnreachable
+	}
+	return true, nil
+}
+
+// loadedAnchorDeclared matches active top-level anchor declarations printed by
+// pfctl. A trailing /* covers descendants of its prefix; other names are exact.
+func loadedAnchorDeclared(output, kind, target string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != kind {
+			continue
+		}
+		name := strings.Trim(fields[1], `"`)
+		if name == target {
+			return true
+		}
+		if name == "*" && !strings.Contains(target, "/") {
+			return true
+		}
+		if strings.HasSuffix(name, "/*") && strings.HasPrefix(target, strings.TrimSuffix(name, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 // pfNatLook mirrors `struct pfioc_natlook` from <net/pfvar.h> on darwin.

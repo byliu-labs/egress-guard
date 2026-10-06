@@ -10,7 +10,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/byliu-labs/egress-guard/internal/kernel"
 )
+
+func anchorDeclared() (bool, error) { return kernel.AnchorDeclared() }
 
 // agentState captures launchd registration. The user LaunchAgent is read with
 // `launchctl list`; the system LaunchDaemon is read with
