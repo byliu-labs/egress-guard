@@ -87,6 +87,15 @@ func TestIsInstalledFailsWhenAnchorLoadedButUnreachable(t *testing.T) {
 	}
 }
 
+// rdr reaching the leaf is not enough: the filter ruleset must traverse it too.
+func TestIsInstalledFailsWhenOnlyRdrAnchorIsReachable(t *testing.T) {
+	stubPfctl(t, issue11MainNat+"rdr-anchor \"egress-guard\" all\n", issue11MainRules)
+	installed, err := (&pfDarwin{}).IsInstalled()
+	if installed || !errors.Is(err, ErrAnchorUnreachable) {
+		t.Fatalf("IsInstalled = (%v, %v), want (false, ErrAnchorUnreachable)", installed, err)
+	}
+}
+
 func TestIsInstalledPassesWhenLoadedRulesReachAnchor(t *testing.T) {
 	for _, tc := range []struct{ name, nat, rules string }{
 		{"exact", issue11MainNat + "rdr-anchor \"egress-guard\" all\n", issue11MainRules + "anchor \"egress-guard\" all\n"},
@@ -111,6 +120,12 @@ func TestLoadedAnchorWildcardCoversNestedName(t *testing.T) {
 	}
 	if loadedAnchorDeclared("# rdr-anchor \"egress-guard\" all\n", "rdr-anchor", "egress-guard") {
 		t.Fatal("commented anchor counted")
+	}
+	if loadedAnchorDeclared("rdr-anchor \"egress/*\" all\n", "rdr-anchor", "egress-guard") {
+		t.Fatal("egress/* must not cover egress-guard: a wildcard matches whole path segments")
+	}
+	if loadedAnchorDeclared("rdr-anchor \"*\" all\n", "rdr-anchor", "foo/egress-guard") {
+		t.Fatal("bare * covers top-level anchors only, not foo/egress-guard")
 	}
 }
 
