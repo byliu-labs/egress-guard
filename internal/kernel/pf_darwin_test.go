@@ -3,10 +3,40 @@
 package kernel
 
 import (
+	"encoding/binary"
 	"net"
 	"strings"
 	"testing"
+	"unsafe"
 )
+
+func TestPfNatLookMatchesXNULayout(t *testing.T) {
+	var nl pfNatLook
+	if got := unsafe.Sizeof(nl); got != 84 {
+		t.Errorf("size = %d, want 84", got)
+	}
+	for _, field := range []struct {
+		name      string
+		got, want uintptr
+	}{
+		{"sxport", unsafe.Offsetof(nl.sxport), 64},
+		{"rdxport", unsafe.Offsetof(nl.rdxport), 76},
+		{"af", unsafe.Offsetof(nl.af), 80},
+		{"direction", unsafe.Offsetof(nl.direction), 83},
+	} {
+		if field.got != field.want {
+			t.Errorf("%s offset = %d, want %d", field.name, field.got, field.want)
+		}
+	}
+}
+
+func TestPfNatLookXportRoundTrip(t *testing.T) {
+	var nl pfNatLook
+	binary.BigEndian.PutUint16(nl.sxport[:2], 443)
+	if got := binary.BigEndian.Uint16(nl.sxport[:2]); got != 443 {
+		t.Errorf("sxport = %d, want 443", got)
+	}
+}
 
 // TestSockaddrToIP verifies the byte-to-IP helper used by OriginalDest.
 func TestSockaddrToIP(t *testing.T) {
@@ -22,13 +52,8 @@ func TestSockaddrToIP(t *testing.T) {
 // We don't dial it; we just compute the encoded number.
 func TestDiocNatlook_NumberStable(t *testing.T) {
 	got := diocNatlook()
-	if got == 0 {
-		t.Error("diocNatlook() returned 0, expected non-zero ioctl number")
-	}
-	// The number must be a valid IOC encoding (high bits set: read+write).
-	const iocInOut = 0xc0000000
-	if got&iocInOut != iocInOut {
-		t.Errorf("diocNatlook() = 0x%x, missing iocInOut bits", got)
+	if got != 0xC0544417 {
+		t.Errorf("diocNatlook() = 0x%x, want 0xC0544417", got)
 	}
 }
 

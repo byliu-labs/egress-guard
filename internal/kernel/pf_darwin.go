@@ -90,10 +90,10 @@ type pfNatLook struct {
 	daddr     [16]byte
 	rsaddr    [16]byte // post-rdr replacement saddr
 	rdaddr    [16]byte // post-rdr replacement daddr (= our local listen addr)
-	sxport    uint16
-	dxport    uint16
-	rsxport   uint16
-	rdxport   uint16
+	sxport    [4]byte  // union pf_state_xport; port occupies the first 2 bytes
+	dxport    [4]byte
+	rsxport   [4]byte
+	rdxport   [4]byte
 	af        uint8
 	proto     uint8
 	protoVar  uint8
@@ -149,8 +149,8 @@ func (p *pfDarwin) OriginalDest(conn net.Conn) (net.IP, int, error) {
 	if v4 := lAddr.IP.To4(); v4 != nil {
 		copy(nl.daddr[:4], v4)
 	}
-	binary.BigEndian.PutUint16(asBytes(&nl.sxport), uint16(rAddr.Port))
-	binary.BigEndian.PutUint16(asBytes(&nl.dxport), uint16(lAddr.Port))
+	binary.BigEndian.PutUint16(nl.sxport[:2], uint16(rAddr.Port))
+	binary.BigEndian.PutUint16(nl.dxport[:2], uint16(lAddr.Port))
 
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
@@ -162,16 +162,11 @@ func (p *pfDarwin) OriginalDest(conn net.Conn) (net.IP, int, error) {
 		return nil, 0, fmt.Errorf("kernel: DIOCNATLOOK: %w", errno)
 	}
 	ip := sockaddrToIP([4]byte{nl.rdaddr[0], nl.rdaddr[1], nl.rdaddr[2], nl.rdaddr[3]})
-	port := int(binary.BigEndian.Uint16(asBytes(&nl.rdxport)))
+	port := int(binary.BigEndian.Uint16(nl.rdxport[:2]))
 	return ip, port, nil
 }
 
 // sockaddrToIP returns a net.IP from a 4-byte network-order array.
 func sockaddrToIP(b [4]byte) net.IP {
 	return net.IPv4(b[0], b[1], b[2], b[3])
-}
-
-// asBytes is an unsafe view of a uint16 as a 2-byte slice for binary.BigEndian.
-func asBytes(p *uint16) []byte {
-	return (*[2]byte)(unsafe.Pointer(p))[:]
 }
