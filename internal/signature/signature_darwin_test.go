@@ -4,6 +4,7 @@ package signature
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -40,6 +41,8 @@ func TestDarwin_AppleSystemBinaryNormalizesTeamID(t *testing.T) {
 		t.Errorf("trustd not valid")
 	}
 	if id.TeamID != "APPLE" {
+		out, detailsErr := exec.Command("codesign", "-dvv", "--", "/usr/libexec/trustd").CombinedOutput()
+		t.Logf("codesign details (err=%v): %s", detailsErr, out)
 		t.Errorf("TeamID = %q, want APPLE (Apple system binary normalization)", id.TeamID)
 	}
 }
