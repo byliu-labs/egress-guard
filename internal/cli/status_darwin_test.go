@@ -4,11 +4,39 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/byliu-labs/egress-guard/internal/kernel"
 )
+
+func TestKernelStatusReportsUnreachableAnchorAsNotProtected(t *testing.T) {
+	var buf bytes.Buffer
+	writeKernelStatus(&buf, false, kernel.ErrAnchorUnreachable, true, nil)
+	out := buf.String()
+	if !strings.Contains(out, "NOT protected") || !strings.Contains(out, "sudo egress-guard install") {
+		t.Fatalf("status = %q", out)
+	}
+}
+
+func TestKernelStatusUnprivilegedReadsUndeclaredAnchorFromPfConf(t *testing.T) {
+	var buf bytes.Buffer
+	writeKernelStatus(&buf, false, errors.New("pfctl requires root"), false, nil)
+	if !strings.Contains(buf.String(), "NOT protected") {
+		t.Fatalf("status = %q", buf.String())
+	}
+}
+
+func TestKernelStatusDeclaredButUnprobedStaysUnknown(t *testing.T) {
+	var buf bytes.Buffer
+	writeKernelStatus(&buf, false, errors.New("pfctl requires root"), true, nil)
+	if !strings.Contains(buf.String(), "unknown") || strings.Contains(buf.String(), "INSTALLED") {
+		t.Fatalf("status = %q", buf.String())
+	}
+}
 
 // Real `launchctl list` output captured from a running user LaunchAgent.
 const launchctlListRunning = `{

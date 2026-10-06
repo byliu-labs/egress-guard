@@ -21,6 +21,10 @@ const anchorName = "egress-guard"
 // anchorFilePath is where we write the anchor's rule set.
 const anchorFilePath = "/etc/pf.anchors/egress-guard"
 
+var runPfctl = func(args ...string) ([]byte, error) {
+	return exec.Command("pfctl", args...).CombinedOutput()
+}
+
 type pfDarwin struct{}
 
 func defaultInstaller() RulesInstaller { return &pfDarwin{} }
@@ -64,21 +68,50 @@ func (p *pfDarwin) Uninstall() error {
 }
 
 func (p *pfDarwin) IsInstalled() (bool, error) {
-	if _, err := os.Stat(anchorFilePath); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	cmd := exec.Command("pfctl", "-a", anchorName, "-sn")
-	out, err := cmd.CombinedOutput()
+	out, err := runPfctl("-a", anchorName, "-sn")
 	if err != nil {
 		if strings.Contains(string(out), "No such anchor") {
 			return false, nil
 		}
 		return false, fmt.Errorf("kernel: pfctl -sn: %w", err)
 	}
-	return strings.Contains(string(out), "rdr"), nil
+	if !strings.Contains(string(out), "rdr") {
+		return false, nil
+	}
+	nat, err := runPfctl("-s", "nat")
+	if err != nil {
+		return false, fmt.Errorf("kernel: pfctl -s nat: %w (output: %s)", err, nat)
+	}
+	rules, err := runPfctl("-s", "rules")
+	if err != nil {
+		return false, fmt.Errorf("kernel: pfctl -s rules: %w (output: %s)", err, rules)
+	}
+	if !loadedAnchorDeclared(string(nat), "rdr-anchor", anchorName) || !loadedAnchorDeclared(string(rules), "anchor", anchorName) {
+		return false, ErrAnchorUnreachable
+	}
+	return true, nil
+}
+
+// loadedAnchorDeclared matches active top-level anchor declarations printed by
+// pfctl. A trailing /* covers descendants of its prefix; other names are exact.
+func loadedAnchorDeclared(output, kind, target string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != kind {
+			continue
+		}
+		name := strings.Trim(fields[1], `"`)
+		if name == target {
+			return true
+		}
+		if name == "*" && !strings.Contains(target, "/") {
+			return true
+		}
+		if strings.HasSuffix(name, "/*") && strings.HasPrefix(target, strings.TrimSuffix(name, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 // pfNatLook mirrors `struct pfioc_natlook` from <net/pfvar.h> on darwin.
@@ -90,10 +123,10 @@ type pfNatLook struct {
 	daddr     [16]byte
 	rsaddr    [16]byte // post-rdr replacement saddr
 	rdaddr    [16]byte // post-rdr replacement daddr (= our local listen addr)
-	sxport    uint16
-	dxport    uint16
-	rsxport   uint16
-	rdxport   uint16
+	sxport    [4]byte  // union pf_state_xport; port occupies the first 2 bytes
+	dxport    [4]byte
+	rsxport   [4]byte
+	rdxport   [4]byte
 	af        uint8
 	proto     uint8
 	protoVar  uint8
@@ -149,8 +182,8 @@ func (p *pfDarwin) OriginalDest(conn net.Conn) (net.IP, int, error) {
 	if v4 := lAddr.IP.To4(); v4 != nil {
 		copy(nl.daddr[:4], v4)
 	}
-	binary.BigEndian.PutUint16(asBytes(&nl.sxport), uint16(rAddr.Port))
-	binary.BigEndian.PutUint16(asBytes(&nl.dxport), uint16(lAddr.Port))
+	binary.BigEndian.PutUint16(nl.sxport[:2], uint16(rAddr.Port))
+	binary.BigEndian.PutUint16(nl.dxport[:2], uint16(lAddr.Port))
 
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
@@ -162,16 +195,11 @@ func (p *pfDarwin) OriginalDest(conn net.Conn) (net.IP, int, error) {
 		return nil, 0, fmt.Errorf("kernel: DIOCNATLOOK: %w", errno)
 	}
 	ip := sockaddrToIP([4]byte{nl.rdaddr[0], nl.rdaddr[1], nl.rdaddr[2], nl.rdaddr[3]})
-	port := int(binary.BigEndian.Uint16(asBytes(&nl.rdxport)))
+	port := int(binary.BigEndian.Uint16(nl.rdxport[:2]))
 	return ip, port, nil
 }
 
 // sockaddrToIP returns a net.IP from a 4-byte network-order array.
 func sockaddrToIP(b [4]byte) net.IP {
 	return net.IPv4(b[0], b[1], b[2], b[3])
-}
-
-// asBytes is an unsafe view of a uint16 as a 2-byte slice for binary.BigEndian.
-func asBytes(p *uint16) []byte {
-	return (*[2]byte)(unsafe.Pointer(p))[:]
 }
