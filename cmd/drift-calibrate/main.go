@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/byliu-labs/egress-guard/internal/catalog"
+	"github.com/byliu-labs/egress-guard/internal/cli"
 	"github.com/byliu-labs/egress-guard/internal/decisionlog"
 	"github.com/byliu-labs/egress-guard/internal/drift"
+	"github.com/byliu-labs/egress-guard/internal/rejected"
 )
 
 func main() {
@@ -28,7 +30,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "read %s: %v\n", *logPath, err)
 		os.Exit(1)
 	}
-	scores, infinite, unscorable := scoresForEntries(entries, *train)
+	rejectionPath, err := cli.RejectedPairsPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	store, err := rejected.OpenReadOnly(rejectionPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	scores, infinite, unscorable := scoresForEntries(entries, *train, calibrationRejections{store})
 	sort.Float64s(scores)
 	fmt.Printf("connections scored: %d (+%d with no history, +%d unscorable)\n",
 		len(scores), infinite, unscorable)
@@ -48,7 +60,14 @@ func main() {
 // non-measurement, and folding it into the sample as distance 0 would report a
 // median joint distance of zero and understate the prompt rate of any
 // threshold chosen from these quantiles.
-func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, int, int) {
+type calibrationRejections struct{ store *rejected.Store }
+
+func (r calibrationRejections) Contains(base, sha, team, host string) bool {
+	return r.store.Contains(rejected.Key{ExeBasename: base, ExeSHA256: sha, TeamID: team, Host: host})
+}
+func (r calibrationRejections) Digest() string { return r.store.Digest() }
+
+func scoresForEntries(entries []decisionlog.Entry, train float64, rejections ...drift.RejectionSet) ([]float64, int, int) {
 	joined := decisionlog.Join(entries)
 	cut := int(float64(len(joined)) * train)
 	var training []decisionlog.Entry
@@ -58,7 +77,11 @@ func scoresForEntries(entries []decisionlog.Entry, train float64) ([]float64, in
 			training = append(training, item.Flow)
 		}
 	}
-	baseline := drift.BuildBaseline(&catalog.Catalog{}, training)
+	var rej drift.RejectionSet
+	if len(rejections) > 0 {
+		rej = rejections[0]
+	}
+	baseline := drift.BuildBaselineWithRejections(&catalog.Catalog{}, training, rej)
 	// The clouds carry a concurrency derived from the log, so the connections
 	// scored against them must carry one too. Passing zero here would score
 	// every connection that had company as if it had none, offsetting the whole

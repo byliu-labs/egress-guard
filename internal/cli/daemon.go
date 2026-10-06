@@ -26,6 +26,7 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/pending"
 	"github.com/byliu-labs/egress-guard/internal/procid"
 	"github.com/byliu-labs/egress-guard/internal/prompt"
+	"github.com/byliu-labs/egress-guard/internal/rejected"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 	tel "github.com/byliu-labs/egress-guard/internal/telemetry"
 )
@@ -141,6 +142,14 @@ func Start(args []string) error {
 	if err != nil {
 		return err
 	}
+	rejectedPath, err := RejectedPairsPath()
+	if err != nil {
+		return err
+	}
+	rejectedStore, err := rejected.Open(rejectedPath)
+	if err != nil {
+		return err
+	}
 	idleProbe := idle.NewCached(idle.NewSystemProbe(), idleProbeTTL, idleProbeMaxAge)
 	idleProbe.OnError = func(err error) { stdLogger{}.Errorf("idle: probe failed: %v", err) }
 	// Prime the cache: the first adjudicated connection should not also be
@@ -151,7 +160,7 @@ func Start(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve baseline cache path: %w", err)
 	}
-	startupBaseline := loadStartupBaseline(logPath, baselineCache, liveCat, stdLogger{})
+	startupBaseline := loadStartupBaseline(logPath, baselineCache, liveCat, stdLogger{}, rejectionAdapter{s: rejectedStore})
 
 	ratifyWriter, err := newDaemonRatifyWriter(catalogPath, liveCat)
 	if err != nil {
@@ -206,7 +215,7 @@ func Start(args []string) error {
 	// cancelled on SIGINT/SIGTERM.
 	refresh := make(chan os.Signal, 1)
 	signal.Notify(refresh, syscall.SIGHUP)
-	go runBaselineRefresher(ctx, d, logPath, baselineCache, liveCat, baselineRefreshInterval, refresh, stdLogger{})
+	go runBaselineRefresher(ctx, d, logPath, baselineCache, liveCat, baselineRefreshInterval, refresh, stdLogger{}, rejectionAdapter{s: rejectedStore})
 
 	fmt.Fprintf(os.Stderr, "egress-guard: daemon listening on 127.0.0.1:%d\n", flags.port)
 	return d.Run(ctx)
@@ -295,19 +304,29 @@ func baselineCachePath() (string, error) {
 // missing decision log yields an empty baseline (every connection novel until
 // history accrues), not an error. cat is attached to the baseline by reference
 // for catalog-aware classification.
-func loadOrBuildBaseline(logPath, cachePath string, cat *catalog.Catalog, logger prompt.Logger) (*drift.Baseline, error) {
+func loadOrBuildBaseline(logPath, cachePath string, cat *catalog.Catalog, logger prompt.Logger, rejections ...rejectionAdapter) (*drift.Baseline, error) {
+	var rej drift.RejectionSet
+	if len(rejections) > 0 {
+		if rejections[0].s.Quarantined() {
+			return nil, fmt.Errorf("rejection store was corrupt and quarantined; baseline disabled until reviewed")
+		}
+		if err := rejections[0].s.Refresh(); err != nil {
+			return nil, err
+		}
+		rej = rejections[0]
+	}
 	entries, err := decisionlog.ReadHistory(logPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read decision log for baseline: %w", err)
 	}
 	if cached, cerr := drift.LoadBaseline(cachePath, cat); cerr == nil {
-		if !cached.IsStale(entries) {
+		if !cached.IsStale(entries) && cached.RejectionDigest() == rejectionDigest(rej) {
 			return cached, nil
 		}
 	} else if !errors.Is(cerr, os.ErrNotExist) && logger != nil {
 		logger.Errorf("baseline: discarding unreadable cache %s, rebuilding: %v", cachePath, cerr)
 	}
-	fresh := drift.BuildBaseline(cat, entries)
+	fresh := drift.BuildBaselineWithRejections(cat, entries, rej)
 	if err := fresh.Save(cachePath); err != nil {
 		return nil, fmt.Errorf("save baseline cache %s: %w", cachePath, err)
 	}
@@ -362,7 +381,7 @@ type baselineSetter interface {
 // rebuilds), swapping the result into setter. It returns when ctx is cancelled.
 // A failed rebuild is logged and skipped — the daemon keeps the last good
 // baseline; a bad rebuild never degrades enforcement.
-func runBaselineRefresher(ctx context.Context, setter baselineSetter, logPath, cachePath string, cat *catalog.Catalog, interval time.Duration, refresh <-chan os.Signal, logger prompt.Logger) {
+func runBaselineRefresher(ctx context.Context, setter baselineSetter, logPath, cachePath string, cat *catalog.Catalog, interval time.Duration, refresh <-chan os.Signal, logger prompt.Logger, rejections ...rejectionAdapter) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -372,7 +391,7 @@ func runBaselineRefresher(ctx context.Context, setter baselineSetter, logPath, c
 		case <-ticker.C:
 		case <-refresh:
 		}
-		b, err := loadOrBuildBaseline(logPath, cachePath, cat, logger)
+		b, err := loadOrBuildBaseline(logPath, cachePath, cat, logger, rejections...)
 		if err != nil {
 			if logger != nil {
 				logger.Errorf("baseline: background refresh failed: %v", err)
@@ -390,8 +409,8 @@ func runBaselineRefresher(ctx context.Context, setter baselineSetter, logPath, c
 // as generic novel pairing until the background refresher succeeds. This mirrors
 // runBaselineRefresher, which logs-and-skips the same failures — a bad baseline
 // never degrades enforcement, at startup or at runtime.
-func loadStartupBaseline(logPath, cachePath string, cat *catalog.Catalog, logger prompt.Logger) *drift.Baseline {
-	b, err := loadOrBuildBaseline(logPath, cachePath, cat, logger)
+func loadStartupBaseline(logPath, cachePath string, cat *catalog.Catalog, logger prompt.Logger, rejections ...rejectionAdapter) *drift.Baseline {
+	b, err := loadOrBuildBaseline(logPath, cachePath, cat, logger, rejections...)
 	if err != nil {
 		if logger != nil {
 			logger.Errorf("baseline: starting without a drift baseline (build failed, refresher will retry): %v", err)

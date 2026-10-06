@@ -64,3 +64,35 @@ func TestReviewPinnedMessageSaysDaemonReloadRequired(t *testing.T) {
 		t.Fatalf("message = %q, must not claim a running daemon sees reviewed pins immediately", msg)
 	}
 }
+
+func TestReviewDismissRemovesOnlySelectedBinary(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	path, err := configPath("pending-reviews.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := pending.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"curl", "git"} {
+		if err := store.Record(pending.Item{ExePath: "/bin/" + name, Basename: name, NewSHA256: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Review([]string{"--dismiss", "1"}); err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].ExePath == items[0].ExePath {
+		t.Fatalf("dismiss removed wrong binary: %+v", left)
+	}
+}

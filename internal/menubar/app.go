@@ -124,8 +124,8 @@ func (m *menu) refresh() {
 	systray.SetTitle(title)
 	systray.SetTooltip(tip)
 	m.status.SetTitle(StatusLine(r))
-	if r.PendingReviews > 0 {
-		m.review.SetTitle("Review updated binaries (" + strconv.Itoa(r.PendingReviews) + ")")
+	if r.PendingReviews+r.BaselinePendingReview > 0 {
+		m.review.SetTitle("Review (" + strconv.Itoa(r.PendingReviews+r.BaselinePendingReview) + ")")
 		m.review.Enable()
 		m.review.Show()
 	} else {

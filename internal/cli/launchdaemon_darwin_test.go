@@ -5,6 +5,7 @@ package cli
 import (
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,6 +101,7 @@ func TestRenderLaunchDaemonPlist_SubstitutesAllPlaceholders(t *testing.T) {
 		"/opt/homebrew/bin/egress-guard",
 		8443,
 		"/var/db/egress-guard/.local/state/egress-guard",
+		"/Users/alice/.config/egress-guard/rejected-pairs.jsonl",
 	)
 
 	if strings.Contains(got, "{{") {
@@ -111,6 +113,8 @@ func TestRenderLaunchDaemonPlist_SubstitutesAllPlaceholders(t *testing.T) {
 		"<string>--port=8443</string>",
 		"<string>--system</string>",
 		"<string>/var/db/egress-guard/.local/state/egress-guard/daemon.log</string>",
+		"<key>EGRESS_GUARD_REJECTION_PATH</key>",
+		"<string>/Users/alice/.config/egress-guard/rejected-pairs.jsonl</string>",
 	} {
 		if !strings.Contains(got, s) {
 			t.Errorf("rendered plist missing %q", s)
@@ -119,20 +123,47 @@ func TestRenderLaunchDaemonPlist_SubstitutesAllPlaceholders(t *testing.T) {
 }
 
 func TestRenderLaunchDaemonPlist_NoUserNameKey(t *testing.T) {
-	got := renderLaunchDaemonPlist("/bin/eg", 8443, "/state")
+	got := renderLaunchDaemonPlist("/bin/eg", 8443, "/state", "/Users/alice/rejected.jsonl")
 	if strings.Contains(got, "<key>UserName</key>") {
 		t.Error("LaunchDaemon plist must not set UserName because the daemon needs root for /dev/pf")
 	}
 }
 
 func TestRenderLaunchDaemonPlist_DistinctLabelFromLaunchAgent(t *testing.T) {
-	daemonPlist := renderLaunchDaemonPlist("/bin/eg", 8443, "/state")
+	daemonPlist := renderLaunchDaemonPlist("/bin/eg", 8443, "/state", "/Users/alice/rejected.jsonl")
 	agentPlist := renderLaunchdPlist("/bin/eg", 8443, "/state", "/Users/alice")
 	if strings.Contains(daemonPlist, "<string>com.byliu.egress-guard</string>") {
 		t.Error("LaunchDaemon plist must use its own label")
 	}
 	if !strings.Contains(agentPlist, "<string>com.byliu.egress-guard</string>") {
 		t.Error("sanity check: LaunchAgent template regressed")
+	}
+}
+
+func TestInstallRejectionPathFollowsSudoUser(t *testing.T) {
+	owner, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner.Username == "root" {
+		t.Skip("test needs a non-root current user")
+	}
+	t.Setenv("SUDO_USER", owner.Username)
+	t.Setenv("EGRESS_GUARD_REJECTION_PATH", "")
+	got, err := installingUserRejectionPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(owner.HomeDir, ".config", "egress-guard", "rejected-pairs.jsonl")
+	if got != want {
+		t.Fatalf("rejection path=%q, want %q", got, want)
+	}
+}
+
+func TestRenderLaunchDaemonPlistEscapesRejectionPath(t *testing.T) {
+	got := renderLaunchDaemonPlist("/bin/eg", 8443, "/state", "/Users/a&b/rejected.jsonl")
+	if !strings.Contains(got, "/Users/a&amp;b/rejected.jsonl") {
+		t.Fatal("rejection path broke plist XML")
 	}
 }
 
