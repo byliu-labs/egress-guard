@@ -40,7 +40,7 @@ func TestDarwin_LookupSelf(t *testing.T) {
 	defer client.Close()
 
 	l := defaultLookup()
-	pi, err := l.LookupConn(server)
+	pi, err := l.LookupConn(server, server.LocalAddr().(*net.TCPAddr))
 	if err != nil {
 		t.Fatalf("LookupConn: %v", err)
 	}
@@ -57,4 +57,23 @@ func TestDarwin_LookupSelf(t *testing.T) {
 		t.Errorf("Comm empty — expected basename of exe")
 	}
 	t.Logf("observed: pi.Exe=%q pi.Comm=%q", pi.Exe, pi.Comm)
+}
+
+func TestLsofLookupMatchesRedirectedClientSocket(t *testing.T) {
+	fixture := "p4242\nccurl\nn192.168.1.5:51000->104.20.23.154:443\n"
+	peer := &net.TCPAddr{IP: net.ParseIP("192.168.1.5"), Port: 51000}
+	origDst := &net.TCPAddr{IP: net.ParseIP("104.20.23.154"), Port: 443}
+	pid, _, err := parseLsof([]byte(fixture), peer, origDst)
+	if err != nil || pid != 4242 {
+		t.Fatalf("parseLsof = pid %d, err %v; want 4242", pid, err)
+	}
+}
+
+func TestLsofLookupRejectsDifferentOriginalDestination(t *testing.T) {
+	fixture := "p4242\nccurl\nn192.168.1.5:51000->104.20.23.155:443\n"
+	peer := &net.TCPAddr{IP: net.ParseIP("192.168.1.5"), Port: 51000}
+	origDst := &net.TCPAddr{IP: net.ParseIP("104.20.23.154"), Port: 443}
+	if pid, _, err := parseLsof([]byte(fixture), peer, origDst); err == nil || pid != 0 {
+		t.Fatalf("parseLsof = pid %d, err %v; want no match", pid, err)
+	}
 }

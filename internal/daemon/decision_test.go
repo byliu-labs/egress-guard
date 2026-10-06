@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"path/filepath"
 	"testing"
@@ -14,6 +16,12 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/prompt"
 	"github.com/byliu-labs/egress-guard/internal/signature"
 )
+
+type attributionLogger struct{ messages []string }
+
+func (l *attributionLogger) Errorf(format string, args ...any) {
+	l.messages = append(l.messages, fmt.Sprintf(format, args...))
+}
 
 // stubKernel returns canned dest IP/port. Used by both this file and
 // decision_branches_test.go.
@@ -97,4 +105,36 @@ func TestDecide_ExemptProcessSplices(t *testing.T) {
 	_ = newTestDaemon
 	_ = stubAlwaysAllow{}
 	_ = stubAlwaysDeny{}
+}
+
+func TestHandlePassesOriginalDestinationToProcID(t *testing.T) {
+	d, _, _ := newTestDaemon(t, stubAlwaysDeny{}, false)
+	lookup := procid.NewStub()
+	d.opts.ProcID = lookup
+	server, client := net.Pipe()
+	client.Close()
+	d.handle(server)
+	got := lookup.LastOriginalDest()
+	if got == nil || !got.IP.Equal(net.ParseIP("203.0.113.10")) || got.Port != 443 {
+		t.Fatalf("lookup original destination = %v; want 203.0.113.10:443", got)
+	}
+}
+
+func TestHandleCountsAndRateLimitsAttributionErrors(t *testing.T) {
+	d, _, _ := newTestDaemon(t, stubAlwaysDeny{}, false)
+	lookup := procid.NewStub()
+	lookup.SetErr(errors.New("lsof unavailable"))
+	logger := &attributionLogger{}
+	d.opts.ProcID, d.opts.Logger = lookup, logger
+	for range 2 {
+		server, client := net.Pipe()
+		client.Close()
+		d.handle(server)
+	}
+	if got := d.procLookupFailures.Load(); got != 2 {
+		t.Fatalf("lookup failures = %d, want 2", got)
+	}
+	if len(logger.messages) != 1 {
+		t.Fatalf("error log count = %d, want 1", len(logger.messages))
+	}
 }

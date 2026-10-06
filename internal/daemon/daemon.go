@@ -119,7 +119,9 @@ type Daemon struct {
 	// atomic pointer (not opts.Baseline directly) so a background refresher can
 	// swap it while connection goroutines read it without a data race. A nil
 	// pointer is valid and degrades to generic novel-pairing classification.
-	baseline atomic.Pointer[drift.Baseline]
+	baseline           atomic.Pointer[drift.Baseline]
+	procLookupFailures atomic.Uint64
+	procLookupLastLog  atomic.Int64
 }
 
 func (d *Daemon) nowTime() time.Time {

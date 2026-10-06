@@ -460,7 +460,16 @@ func (d *Daemon) handle(conn net.Conn) {
 	// so the exempt fast-path can splice without spending the SNI parse.
 	var pi procid.ProcInfo
 	if d.opts.ProcID != nil {
-		pi, _ = d.opts.ProcID.LookupConn(conn)
+		pi, err = d.opts.ProcID.LookupConn(conn, &net.TCPAddr{IP: dstIP, Port: dstPort})
+		if err != nil {
+			pi = procid.ProcInfo{}
+			count := d.procLookupFailures.Add(1)
+			now := d.nowTime().UnixNano()
+			last := d.procLookupLastLog.Load()
+			if d.opts.Logger != nil && now-last >= int64(time.Minute) && d.procLookupLastLog.CompareAndSwap(last, now) {
+				d.opts.Logger.Errorf("process attribution failed (count=%d, original_dest=%s): %v", count, net.JoinHostPort(dstIP.String(), itoa(dstPort)), err)
+			}
+		}
 	}
 	var sig signature.SignedIdentity
 	if d.opts.Signature != nil && pi.Exe != "" {

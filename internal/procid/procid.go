@@ -23,7 +23,7 @@ type ProcInfo struct {
 
 // Lookup recovers ProcInfo for the local end of a connection.
 type Lookup interface {
-	LookupConn(conn net.Conn) (ProcInfo, error)
+	LookupConn(conn net.Conn, origDst *net.TCPAddr) (ProcInfo, error)
 }
 
 // Default returns the platform implementation.
@@ -34,6 +34,6 @@ func Default() Lookup {
 // unsupported is the placeholder Lookup for non-darwin builds.
 type unsupported struct{}
 
-func (unsupported) LookupConn(net.Conn) (ProcInfo, error) {
+func (unsupported) LookupConn(net.Conn, *net.TCPAddr) (ProcInfo, error) {
 	return ProcInfo{}, errors.New("procid: unsupported platform")
 }
