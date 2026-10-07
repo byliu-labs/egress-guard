@@ -11,34 +11,45 @@ import (
 	"github.com/byliu-labs/egress-guard/internal/procid"
 )
 
-func TestDaemonAndReplayScoreTheSameConnectionIdentically(t *testing.T) {
+func TestDaemonAndReplayScoreHeldOutConnectionsIdentically(t *testing.T) {
 	_, hash, err := procid.NewExeHasher().Hash("/usr/bin/curl")
 	if err != nil {
 		t.Fatal(err)
 	}
 	history := steadyPairHistory(hash, time.Minute, 40)
-	train, held := history[:len(history)-2], history[len(history)-2:]
+	train, held := history[:len(history)-4], history[len(history)-4:]
 	baseline := drift.BuildBaseline(&catalog.Catalog{}, train)
 
-	replay := newLastSeen(64)
-	replay.seed(baseline)
-	joined := decisionlog.Join(held)[0]
-	want := baseline.ScoreAgainst(
-		drift.IdentityFromEntry(joined.Decision), joined.Decision.Host, joined,
-		replay.at(drift.BaselinePairKey(joined.Decision)), 0,
-	)
-
-	var got drift.Event
-	runAllowedConnectionWithDaemon(t, 512, func(d *Daemon) {
-		d.SetBaseline(baseline)
-		d.now = func() time.Time { return steadyPairEnd }
-		d.onCompletedScore = func(ev drift.Event) { got = ev }
-	})
-
-	if !got.Score.Scored {
-		t.Fatalf("daemon score = %+v, want a scored point", got.Score)
+	d := newDaemonForBaselineTest()
+	d.SetBaseline(baseline)
+	d.now = func() time.Time { return baseline.BuiltThrough().Add(time.Hour) }
+	joined := decisionlog.Join(held)
+	replayLastSeen := make(map[string]time.Time, len(baseline.Pairs()))
+	for _, pair := range baseline.Pairs() {
+		replayLastSeen[drift.BaselinePairKeyFor(pair.Identity, pair.Host)] = baseline.LastSeenFor(pair.Identity, pair.Host)
 	}
-	if math.Abs(got.Score.Distance-want.Distance) > 1e-9 {
-		t.Fatalf("daemon = %v, replay = %v; the two spaces have diverged", got.Score.Distance, want.Distance)
+
+	for _, item := range joined {
+		key := drift.BaselinePairKey(item.Decision)
+		want := baseline.ScoreAgainst(
+			drift.IdentityFromEntry(item.Decision), item.Decision.Host, item,
+			replayLastSeen[key], 0,
+		)
+		got := d.classifyCompletedFlow(item.Decision, item.Flow, 0)
+		if !got.Score.Scored {
+			t.Fatalf("daemon score = %+v, want a scored point", got.Score)
+		}
+		if math.Abs(got.Score.Distance-want.Distance) > 1e-9 {
+			t.Fatalf("daemon = %v, replay = %v; the two spaces have diverged", got.Score.Distance, want.Distance)
+		}
+
+		at, err := time.Parse(time.RFC3339, item.Decision.Timestamp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if drift.FoldsIntoBaseline(item.Decision) {
+			d.lastSeen.advanceEntry(item.Decision)
+			replayLastSeen[key] = at
+		}
 	}
 }

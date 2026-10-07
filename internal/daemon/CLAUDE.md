@@ -55,10 +55,20 @@ injected, which is what makes the decision branches testable without root.
 - **Live and derived concurrency do not yet measure the same interval.** `inflight`
   membership spans the whole of `handle()` — ClientHello read, prompt wait, splice —
   and the count is sampled at accept. The derived index measures
-  `[decision.Timestamp, +flow.DurationMS)`, and `decision.Timestamp` is stamped *after*
-  the prompt returns. For a prompted connection those differ by however long the human
-  took. Harmless while nothing consumes the completed-flow score; fix it before wiring
-  one, or live points and historical points will sit in different geometries.
+  `[decision.Timestamp, +flow.DurationMS)`. Three mechanisms pull them apart, and the
+  first two hit ordinary *unprompted* connections, so this is not just a prompt-latency
+  artifact: (1) `BuildConcurrencyIndex` models any entry with no flow record or a
+  non-positive duration as a zero-width **instant**, while `inflight` counted it for its
+  whole open life — a client that stalls in the ClientHello read holds a slot for the
+  full `clientHelloDeadline`, and every denial is invisible to the index; (2) RFC3339 is
+  second-granularity, so sub-second connections that genuinely overlap need not overlap
+  in the derived index; (3) `decision.Timestamp` is stamped *after* the prompt returns,
+  so for a prompted connection the two intervals differ by however long the human took.
+  Mechanism (1) is also attacker-reachable in the weak sense that it runs before the SNI
+  parse: a slow-loris client can hold N slots and inflate the live `DimConcurrency` of
+  every genuine connection accepted in that window while the derived geometry sees zero.
+  Harmless while nothing consumes the completed-flow score; fix it before wiring one, or
+  live points and historical points will sit in different geometries.
 - **Completed-flow scoring is off the admission path and currently unobserved.**
   `classifyCompletedFlow` runs inside `writeFlow`, after the splice, and only when
   `onCompletedScore` is set — which production never does. It must never move earlier:

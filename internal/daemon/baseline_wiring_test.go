@@ -17,7 +17,7 @@ func TestClassifyCompletedFlowScoresCapturedConcurrency(t *testing.T) {
 		{Kind: decisionlog.KindDecision, ConnID: "old-2", Timestamp: "2026-08-18T14:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", Host: "api.example.com"},
 		{Kind: decisionlog.KindFlow, ConnID: "old-2", BytesUp: 10, BytesDown: 10, DurationMS: 10},
 	}
-	d := &Daemon{}
+	d := newDaemonForBaselineTest()
 	d.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, entries))
 	decision := decisionlog.Entry{ConnID: "new", Timestamp: "2026-08-19T14:00:00Z", Exe: "/usr/bin/curl", Host: "api.example.com"}
 	flow := decisionlog.Entry{ConnID: "new", BytesUp: 10, BytesDown: 10, DurationMS: 10}
@@ -43,7 +43,7 @@ func TestClassifyDrift_UsesStoredBaseline(t *testing.T) {
 		{Timestamp: "2026-07-01T10:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", Host: "api.example.com"},
 		{Timestamp: "2026-07-02T10:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/curl", Host: "api.example.com"},
 	})
-	d := &Daemon{}
+	d := newDaemonForBaselineTest()
 	d.SetBaseline(b)
 
 	ev := d.classifyDrift("api.example.com",
@@ -60,7 +60,7 @@ func TestClassifyDrift_UsesRuntimeExeSHA256ForBaselineKey(t *testing.T) {
 		{Timestamp: "2026-07-01T10:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", ExeSHA256: "abc123", Host: "github.com"},
 		{Timestamp: "2026-07-02T10:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", ExeSHA256: "abc123", Host: "github.com"},
 	})
-	d := &Daemon{}
+	d := newDaemonForBaselineTest()
 	d.SetBaseline(b)
 
 	ev := d.classifyDrift("github.com",
@@ -77,7 +77,7 @@ func TestClassifyDriftMarksFlowlessHandshakeAsUnscored(t *testing.T) {
 		{Timestamp: "2026-07-01T10:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", Host: "github.com"},
 		{Timestamp: "2026-07-02T10:00:00Z", Decision: decisionlog.DecisionAllow, Exe: "/usr/bin/git", Host: "github.com"},
 	})
-	d := &Daemon{}
+	d := newDaemonForBaselineTest()
 	d.SetBaseline(b)
 	ev := d.classifyDrift("github.com", procid.ProcInfo{Exe: "/usr/bin/git", PID: 1}, signature.SignedIdentity{}, catalog.Identity{ExeBasename: "git"})
 	if ev.Score.Scored || ev.Score.Distance != 0 {
@@ -86,7 +86,7 @@ func TestClassifyDriftMarksFlowlessHandshakeAsUnscored(t *testing.T) {
 }
 
 func TestClassifyDrift_PreservesRuntimeExePathForRatification(t *testing.T) {
-	d := &Daemon{}
+	d := newDaemonForBaselineTest()
 	d.SetBaseline(drift.BuildBaseline(&catalog.Catalog{}, nil))
 	fullID := catalog.Identity{
 		ExeBasename: "node",

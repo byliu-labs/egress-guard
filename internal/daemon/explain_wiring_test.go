@@ -45,11 +45,13 @@ func (c *capturingDecider) Decide(ctx context.Context, req prompt.Request) promp
 // so decideBranch always reaches the prompt branch. No catalog → no match.
 func unknownDaemon(t *testing.T, ex explain.Explainer, dec prompt.Decider) *Daemon {
 	t.Helper()
-	return &Daemon{opts: Options{
+	d := newDaemonForBaselineTest()
+	d.opts = Options{
 		Allow:     allowlist.New(allowlist.Config{}), // empty → Decide == Unknown
 		Prompt:    dec,
 		Explainer: ex,
-	}}
+	}
+	return d
 }
 
 func drive(t *testing.T, d *Daemon) {
@@ -201,7 +203,8 @@ func TestDecideBranch_ExplainerNotCalledOnFastPaths(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			spy := &spyExplainer{}
-			d := &Daemon{opts: Options{Allow: tc.allow, Catalog: tc.cat, Prompt: &capturingDecider{}, Explainer: spy}}
+			d := newDaemonForBaselineTest()
+			d.opts = Options{Allow: tc.allow, Catalog: tc.cat, Prompt: &capturingDecider{}, Explainer: spy}
 			d.decideBranch(tc.host, net.IPv4(1, 2, 3, 4), pi, sig)
 			if spy.called {
 				t.Fatalf("%s: explainer must not run on the fast path (it is prompt-branch only)", tc.name)
